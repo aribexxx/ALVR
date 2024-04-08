@@ -202,7 +202,7 @@ void Hmd::OnPoseUpdated(uint64_t targetTimestampNs, FfiDeviceMotion motion) {
 
     pose.qWorldFromDriverRotation = HmdQuaternion_Init(1, 0, 0, 0);
     pose.qDriverFromHeadRotation = HmdQuaternion_Init(1, 0, 0, 0);
-
+    
     pose.qRotation = HmdQuaternion_Init(
         motion.orientation.w, motion.orientation.x, motion.orientation.y, motion.orientation.z);
 
@@ -211,11 +211,10 @@ void Hmd::OnPoseUpdated(uint64_t targetTimestampNs, FfiDeviceMotion motion) {
     pose.vecPosition[2] = motion.position[2];
 
     m_pose = pose;
-
+    Info("[HMD.cpp] pose:\n vecPos:{}\n vecAcceleration:{}\n vecAngularAcceleration:{}",pose.vecPosition,pose.vecAcceleration,pose.vecAngularAcceleration);
     m_poseHistory->OnPoseUpdated(targetTimestampNs, motion);
 
-    vr::VRServerDriverHost()->TrackedDevicePoseUpdated(
-        this->object_id, pose, sizeof(vr::DriverPose_t));
+    vr::VRServerDriverHost()->TrackedDevicePoseUpdated(this->object_id, pose, sizeof(vr::DriverPose_t));
 
     if (m_viveTrackerProxy)
         m_viveTrackerProxy->update();
