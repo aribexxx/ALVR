@@ -766,6 +766,7 @@ fn connection_pipeline(
                 {
                     let data_manager_lock = SERVER_DATA_MANAGER.read();
                     if data_manager_lock.settings().logging.log_tracking {
+                        //NOTE: here we send event, it can be seen in log
                         alvr_events::send_event(EventType::Tracking(Box::new(TrackingEvent {
                             head_motion: motions
                                 .iter()
@@ -852,7 +853,8 @@ fn connection_pipeline(
 
                 if let Some(stats) = &mut *STATISTICS_MANAGER.lock() {
                     stats.report_tracking_received(tracking.target_timestamp);
-
+                    
+                    //SetTracking() is in Cpp. ffi_motion is a rust
                     unsafe {
                         crate::SetTracking(
                             tracking.target_timestamp.as_nanos() as _,
