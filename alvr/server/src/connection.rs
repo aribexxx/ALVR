@@ -797,7 +797,7 @@ fn connection_pipeline(
 
                     sink.send_tracking(face_data);
                 }
-
+                //TODO: replace motions here with the predicted motion
                 let ffi_motions = motions
                     .into_iter()
                     .map(|(id, motion)| tracking::to_ffi_motion(id, motion))

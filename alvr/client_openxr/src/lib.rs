@@ -329,8 +329,7 @@ fn stream_input_pipeline(
             stream_ctx.last_ipd = ipd;
         }
 
-        // Note: Here is assumed that views are on the same plane and orientation. The head position
-        // is approximated as the center point between the eyes.
+        // Note: Here is assumed that views are on the same plane and orientation. The head position is approximated as the center point between the eyes.
         let head_position =
             (to_vec3(views[0].pose.position) + to_vec3(views[1].pose.position)) / 2.0;
         let head_orientation = to_quat(views[0].pose.orientation);
