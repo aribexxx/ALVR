@@ -1,3 +1,6 @@
+use std::{net::{TcpListener, TcpStream}, num};
+use serde_json::{json, to_string};
+
 use crate::{
     bitrate::BitrateManager,
     face_tracking::FaceTrackingSink,
@@ -35,6 +38,7 @@ use alvr_sockets::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    io::Read,
     io::Write,
     net::IpAddr,
     process::Command,
@@ -682,6 +686,7 @@ fn connection_pipeline(
     let tracking_manager = Arc::new(Mutex::new(TrackingManager::new()));
     let hand_gesture_manager = Arc::new(Mutex::new(HandGestureManager::new()));
 
+    // todo : Add socket to send motion data to python predictor module.
     let tracking_receive_thread = thread::spawn({
         let tracking_manager = Arc::clone(&tracking_manager);
         let hand_gesture_manager = Arc::clone(&hand_gesture_manager);
@@ -724,7 +729,7 @@ fn connection_pipeline(
                         .clone()
                         .into_option()
                 };
-
+               
                 let track_controllers = controllers_config
                     .as_ref()
                     .map(|c| c.tracked)
@@ -746,6 +751,7 @@ fn connection_pipeline(
                             tracking.hand_skeletons[1].is_some(),
                         ],
                     );
+                    send_to_predictor(&tracking.target_timestamp,&motions);
 
                     left_hand_skeleton = tracking.hand_skeletons[0].map(|s| {
                         tracking::to_openvr_hand_skeleton(headset_config, *LEFT_HAND_ID, s)
@@ -789,6 +795,7 @@ fn connection_pipeline(
                             htc_lip_expression: tracking.face_data.htc_lip_expression.clone(),
                         })))
                     }
+                    
                 }
 
                 if let Some(sink) = &mut face_tracking_sink {
@@ -1322,3 +1329,89 @@ pub extern "C" fn send_haptics(device_id: u64, duration_s: f32, frequency: f32, 
             .ok();
     }
 }
+
+
+fn send_to_predictor(timestamp: &Duration, motions: &Vec<(u64, alvr_common::DeviceMotion)>) {
+        // Define host and port
+        let host = "127.0.0.1"; // Loopback address for localhost
+        let port = 12345;       // Same port as the server
+        
+        // Connect to the server
+        match TcpStream::connect((host, port)) {
+            Ok(mut stream) => {
+                println!("Connected to server at {}:{}", host, port);
+    
+                // Send data to server
+                // let message = "Hello, server!";
+                // stream.write_all(message.as_bytes()).unwrap();
+                
+                let motion_string:String = convert_to_string(timestamp,motions);
+                stream.write_all(motion_string.as_bytes()).unwrap();
+                println!("Sent message to server: {}", motion_string);
+    
+                // Receive response from server
+                let mut buffer = [0; 1024];
+                match stream.read(&mut buffer) {
+                    Ok(_) => {
+                        handle_client(stream);
+                        // let response = String::from_utf8_lossy(&buffer);
+                        // debug!("Received response from server: {}", response);
+                    },
+                    Err(err) => {
+                        eprintln!("Error receiving response: {:?}", err);
+                    }
+                }
+            },
+            Err(err) => {
+                eprintln!("Failed to connect to server: {:?}", err);
+            }
+        }
+
+}
+
+fn convert_to_string(timestamp:&Duration,motions: &Vec<(u64,alvr_common::DeviceMotion)>) -> String {
+    let mut result = String::new();
+    // Iterate over the vector of tuples and format each element into a string
+    
+    for (index, (device_id, motion)) in motions.iter().enumerate() {
+        // Create a JSON object including index, device_id, and motion data
+        let json_object = json!({
+            "index": index,
+            "timestamp": timestamp,
+            "deviceID": device_id,
+            "motion": motion,  // Assuming motion is already serializable
+        });
+        // Serialize the JSON object to a string
+        let json_string = to_string(&json_object).expect("Failed to serialize object to JSON");
+        // Append the JSON string to the result
+        result.push_str(&format!("{}\n", json_string));
+        
+        // let motion_json_string = serde_json::to_string(&motion).expect("Failed to serialize object to JSON");
+        // result.push_str(&format!("Index {}: deviceID: {},motion_json_string: {}\n", index, device_id,motion_json_string));
+    }
+
+    return result
+}
+
+
+
+fn handle_client(mut stream: TcpStream) {
+    // Buffer to store incoming data
+    let mut buffer = [0; 1024];
+
+    // Read data from the client
+    match stream.read(&mut buffer) {
+        Ok(_) => {
+            // Convert the received bytes to a string
+            if let Ok(received_str) = String::from_utf8(buffer.to_vec()) {
+                debug!("Received data from client: {}", received_str);
+            } else {
+                debug!("Received invalid UTF-8 data from client");
+            }
+        }
+        Err(e) => {
+            error!("Error reading from socket: {}", e);
+        }
+    }
+}
+

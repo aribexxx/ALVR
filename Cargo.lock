@@ -105,6 +105,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 
 [[package]]
+name = "adskalman"
+version = "0.15.1"
+source = "git+https://github.com/strawlab/adskalman-rs.git#f7c20fc7b3fa7b487180e8759db7055950231989"
+dependencies = [
+ "approx",
+ "log",
+ "nalgebra 0.32.5",
+ "num-traits",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -339,6 +350,23 @@ dependencies = [
  "alvr_session",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "alvr_predictor"
+version = "20.6.1"
+dependencies = [
+ "adskalman",
+ "alvr_common",
+ "alvr_events",
+ "alvr_filesystem",
+ "alvr_packets",
+ "alvr_session",
+ "anyhow",
+ "env_logger 0.11.0",
+ "log",
+ "nalgebra 0.32.5",
+ "nalgebra-rand-mvn",
 ]
 
 [[package]]
@@ -3250,13 +3278,29 @@ checksum = "d506eb7e08d6329505faa8a3a00a5dcc6de9f76e0c77e4b75763ae3c770831ff"
 dependencies = [
  "approx",
  "matrixmultiply",
- "nalgebra-macros",
+ "nalgebra-macros 0.1.0",
  "num-complex",
  "num-rational",
  "num-traits",
  "rand",
  "rand_distr",
- "simba",
+ "simba 0.6.0",
+ "typenum",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.32.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ea4908d4f23254adda3daa60ffef0f1ac7b8c3e9a864cf3cc154b251908a2ef"
+dependencies = [
+ "approx",
+ "matrixmultiply",
+ "nalgebra-macros 0.2.1",
+ "num-complex",
+ "num-rational",
+ "num-traits",
+ "simba 0.8.1",
  "typenum",
 ]
 
@@ -3269,6 +3313,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "nalgebra-macros"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91761aed67d03ad966ef783ae962ef9bbaca728d2dd7ceb7939ec110fffad998"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "nalgebra-rand-mvn"
+version = "0.1.0"
+source = "git+https://github.com/strawlab/nalgebra-rand-mvn?rev=40dd19c5967b24389452aa8c540f643b10fe4e34#40dd19c5967b24389452aa8c540f643b10fe4e34"
+dependencies = [
+ "nalgebra 0.32.5",
+ "rand",
+ "rand_distr",
 ]
 
 [[package]]
@@ -4635,6 +4700,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "simba"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061507c94fc6ab4ba1c9a0305018408e312e17c041eb63bef8aa726fa33aceae"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-traits",
+ "paste",
+ "wide",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4758,7 +4836,7 @@ checksum = "2d08e5e1748192713cc281da8b16924fb46be7b0c2431854eadc785823e5696e"
 dependencies = [
  "approx",
  "lazy_static",
- "nalgebra",
+ "nalgebra 0.29.0",
  "num-traits",
  "rand",
 ]
