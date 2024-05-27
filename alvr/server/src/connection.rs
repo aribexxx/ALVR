@@ -1,4 +1,5 @@
-use std::{net::{TcpListener, TcpStream}, num};
+use std::net::TcpStream;
+use serde::{Serialize,Deserialize};
 use serde_json::{json, to_string};
 
 use crate::{
@@ -51,6 +52,12 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PredictPose {
+    timestamp:i64,
+    predicted_pose: Vec<f64>
+}
 
 const RETRY_CONNECT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const HANDSHAKE_ACTION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -352,7 +359,7 @@ fn connection_pipeline(
     // This session lock will make sure settings cannot be changed while connecting and no other
     // client can connect (until handshake is finished)
     let mut server_data_lock = SERVER_DATA_MANAGER.write();
-
+    debug!("connection_pppipeline");
     server_data_lock.update_client_list(
         client_hostname.clone(),
         ClientListAction::SetConnectionState(ConnectionState::Connecting),
@@ -709,14 +716,23 @@ fn connection_pipeline(
                     .and_then(|config| {
                         FaceTrackingSink::new(config.sink, settings.connection.osc_local_port).ok()
                     });
-
+            debug!("streaming now??");
             while is_streaming(&client_hostname) {
+                debug!("streaming: YEESSSS {client_hostname}"); 
                 let data = match tracking_receiver.recv(STREAMING_RECV_TIMEOUT) {
-                    Ok(tracking) => tracking,
-                    Err(ConnectionError::TryAgain(_)) => continue,
-                    Err(ConnectionError::Other(_)) => return,
+                    Ok(tracking) => {
+                        debug!("streaming: tracking info OK"); 
+                        tracking},
+                    Err(ConnectionError::TryAgain(e)) => 
+                    {    debug!("streaming: ConnectionError::TryAgain(error: {e}"); 
+                        continue
+                    },
+                    Err(ConnectionError::Other(e)) => {
+                        debug!("streaming: Other error : {e}");
+                        return},
                 };
                 let Ok(tracking) = data.get_header() else {
+                    debug!("streaming: no data collected {client_hostname}"); 
                     return;
                 };
 
@@ -729,11 +745,12 @@ fn connection_pipeline(
                         .clone()
                         .into_option()
                 };
-               
+                debug!("streaming: track_controllers {client_hostname}"); 
                 let track_controllers = controllers_config
                     .as_ref()
                     .map(|c| c.tracked)
                     .unwrap_or(false);
+
 
                 let motions;
                 let left_hand_skeleton;
@@ -751,8 +768,6 @@ fn connection_pipeline(
                             tracking.hand_skeletons[1].is_some(),
                         ],
                     );
-                    send_to_predictor(&tracking.target_timestamp,&motions);
-
                     left_hand_skeleton = tracking.hand_skeletons[0].map(|s| {
                         tracking::to_openvr_hand_skeleton(headset_config, *LEFT_HAND_ID, s)
                     });
@@ -760,7 +775,7 @@ fn connection_pipeline(
                         tracking::to_openvr_hand_skeleton(headset_config, *RIGHT_HAND_ID, s)
                     });
                 }
-
+                debug!("streaming: local_eye_gazes {client_hostname}");
                 // Note: using the raw unrecentered head
                 let local_eye_gazes = tracking
                     .device_motions
@@ -804,6 +819,10 @@ fn connection_pipeline(
 
                     sink.send_tracking(face_data);
                 }
+
+                debug!("streaming:pppredict {client_hostname}");
+                send_to_predictor(&tracking.target_timestamp,&motions);
+                
                 //TODO: replace motions here with the predicted motion
                 let ffi_motions = motions
                     .into_iter()
@@ -883,7 +902,9 @@ fn connection_pipeline(
                     };
                 }
             }
+            debug!("streaming Noooooo {client_hostname}");
         }
+             
     });
 
     let statistics_thread = thread::spawn({
@@ -1335,11 +1356,11 @@ fn send_to_predictor(timestamp: &Duration, motions: &Vec<(u64, alvr_common::Devi
         // Define host and port
         let host = "127.0.0.1"; // Loopback address for localhost
         let port = 12345;       // Same port as the server
-        
+        debug!("send_to_predictor");
         // Connect to the server
         match TcpStream::connect((host, port)) {
             Ok(mut stream) => {
-                println!("Connected to server at {}:{}", host, port);
+                debug!("Connected to server at {}:{}", host, port);
     
                 // Send data to server
                 // let message = "Hello, server!";
@@ -1347,23 +1368,23 @@ fn send_to_predictor(timestamp: &Duration, motions: &Vec<(u64, alvr_common::Devi
                 
                 let motion_string:String = convert_to_string(timestamp,motions);
                 stream.write_all(motion_string.as_bytes()).unwrap();
-                println!("Sent message to server: {}", motion_string);
+                debug!("Sent message to server: {}", motion_string);
     
                 // Receive response from server
-                let mut buffer = [0; 1024];
-                match stream.read(&mut buffer) {
-                    Ok(_) => {
-                        handle_client(stream);
-                        // let response = String::from_utf8_lossy(&buffer);
-                        // debug!("Received response from server: {}", response);
-                    },
-                    Err(err) => {
-                        eprintln!("Error receiving response: {:?}", err);
-                    }
-                }
+                handle_client(stream);
+                // let mut buffer = [0; 1024];
+                // match stream.read(&mut buffer) {
+                //     Ok(_) => {
+                //         let response = String::from_utf8_lossy(&buffer);
+                //         debug!("Received response from server: {}", response);
+                //     },
+                //     Err(err) => {
+                //         debug!("Error receiving response: {:?}", err);
+                //     }
+                // }
             },
             Err(err) => {
-                eprintln!("Failed to connect to server: {:?}", err);
+                debug!("Failed to connect to server: {:?}", err);
             }
         }
 
@@ -1393,25 +1414,32 @@ fn convert_to_string(timestamp:&Duration,motions: &Vec<(u64,alvr_common::DeviceM
     return result
 }
 
-
-
 fn handle_client(mut stream: TcpStream) {
-    // Buffer to store incoming data
-    let mut buffer = [0; 1024];
-
-    // Read data from the client
+    let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
     match stream.read(&mut buffer) {
-        Ok(_) => {
-            // Convert the received bytes to a string
-            if let Ok(received_str) = String::from_utf8(buffer.to_vec()) {
-                debug!("Received data from client: {}", received_str);
+        Ok(size) => {
+            if size > 0 {
+                // Convert the received bytes to a string
+                let received_str = String::from_utf8_lossy(&buffer[..size]);
+                debug!("Received str {}",received_str);
+                    //  Deserialize the JSON string
+                     match serde_json::from_str::<PredictPose>(&received_str) {
+                        Ok(pred_pose) => {
+                            debug!("Deserialized JSON: {:?}", pred_pose);
+                            // Handle the deserialized device object as needed
+                           
+                        }
+                        Err(e) => {
+                            debug!("Failed to deserialize JSON: {:?}", e);
+                            // Handle deserialization error
+                        }
+                    }
             } else {
-                debug!("Received invalid UTF-8 data from client");
+                debug!("No data received from client");
             }
         }
         Err(e) => {
-            error!("Error reading from socket: {}", e);
+            debug!("Failed to receive data: {}", e);
         }
     }
 }
-
