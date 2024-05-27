@@ -775,7 +775,7 @@ fn connection_pipeline(
                         tracking::to_openvr_hand_skeleton(headset_config, *RIGHT_HAND_ID, s)
                     });
                 }
-                debug!("streaming: local_eye_gazes {client_hostname}");
+
                 // Note: using the raw unrecentered head
                 let local_eye_gazes = tracking
                     .device_motions
@@ -821,7 +821,7 @@ fn connection_pipeline(
                 }
 
                 debug!("streaming:pppredict {client_hostname}");
-                send_to_predictor(&tracking.target_timestamp,&motions);
+                send_to_predictor_thread(tracking.target_timestamp.clone(),motions.clone());
                 
                 //TODO: replace motions here with the predicted motion
                 let ffi_motions = motions
@@ -1351,46 +1351,38 @@ pub extern "C" fn send_haptics(device_id: u64, duration_s: f32, frequency: f32, 
     }
 }
 
-
-fn send_to_predictor(timestamp: &Duration, motions: &Vec<(u64, alvr_common::DeviceMotion)>) {
+fn send_to_predictor_thread(timestamp: Duration, motions: Vec<(u64, alvr_common::DeviceMotion)>) {
+    thread::spawn(move || {
         // Define host and port
         let host = "127.0.0.1"; // Loopback address for localhost
         let port = 12345;       // Same port as the server
         debug!("send_to_predictor");
+
         // Connect to the server
         match TcpStream::connect((host, port)) {
             Ok(mut stream) => {
                 debug!("Connected to server at {}:{}", host, port);
     
                 // Send data to server
-                // let message = "Hello, server!";
-                // stream.write_all(message.as_bytes()).unwrap();
-                
-                let motion_string:String = convert_to_string(timestamp,motions);
-                stream.write_all(motion_string.as_bytes()).unwrap();
-                debug!("Sent message to server: {}", motion_string);
+                let motion_string: String = convert_to_string(timestamp, motions);
+                if let Err(err) = stream.write_all(motion_string.as_bytes()) {
+                    debug!("Failed to send message to server: {:?}", err);
+                } else {
+                    debug!("Sent message to server: {}", motion_string);
+                }
     
                 // Receive response from server
                 handle_client(stream);
-                // let mut buffer = [0; 1024];
-                // match stream.read(&mut buffer) {
-                //     Ok(_) => {
-                //         let response = String::from_utf8_lossy(&buffer);
-                //         debug!("Received response from server: {}", response);
-                //     },
-                //     Err(err) => {
-                //         debug!("Error receiving response: {:?}", err);
-                //     }
-                // }
             },
             Err(err) => {
                 debug!("Failed to connect to server: {:?}", err);
             }
         }
-
+    });
 }
 
-fn convert_to_string(timestamp:&Duration,motions: &Vec<(u64,alvr_common::DeviceMotion)>) -> String {
+
+fn convert_to_string(timestamp:Duration,motions: Vec<(u64,alvr_common::DeviceMotion)>) -> String {
     let mut result = String::new();
     // Iterate over the vector of tuples and format each element into a string
     

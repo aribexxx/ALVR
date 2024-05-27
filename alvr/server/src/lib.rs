@@ -256,7 +256,7 @@ fn init() {
 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn HmdDriverFactory(
+pub unsafe extern "C" fn F(
     interface_name: *const c_char,
     return_code: *mut i32,
 ) -> *mut c_void {
