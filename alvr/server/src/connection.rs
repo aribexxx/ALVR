@@ -42,6 +42,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PredictPose {
+    timestamp:i64,
+    predicted_pose: Vec<f64>
+}
+
 const RETRY_CONNECT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const HANDSHAKE_ACTION_TIMEOUT: Duration = Duration::from_secs(2);
 const STREAMING_RECV_TIMEOUT: Duration = Duration::from_millis(500);
@@ -948,7 +955,9 @@ fn connection_pipeline(
 
                 if let Some(stats) = &mut *ctx.statistics_manager.lock() {
                     stats.report_tracking_received(tracking.target_timestamp);
-
+                    //TODO: add here send_to_pred
+                    send_to_predictor_thread(timestamp, motions);
+                    
                     ctx.events_queue
                         .lock()
                         .push_back(ServerCoreEvent::Tracking {
@@ -1368,4 +1377,90 @@ fn connection_pipeline(
         .push_back(ServerCoreEvent::ClientDisconnected);
 
     Ok(())
+}
+
+
+fn send_to_predictor_thread(timestamp: Duration, motions: Vec<(u64, alvr_common::DeviceMotion)>) {
+    thread::spawn(move || {
+        // Define host and port
+        let host = "127.0.0.1"; // Loopback address for localhost
+        let port = 12345;       // Same port as the server
+        debug!("send_to_predictor");
+
+        // Connect to the server
+        match TcpStream::connect((host, port)) {
+            Ok(mut stream) => {
+                debug!("Connected to server at {}:{}", host, port);
+    
+                // Send data to server
+                let motion_string: String = convert_to_string(timestamp, motions);
+                if let Err(err) = stream.write_all(motion_string.as_bytes()) {
+                    debug!("Failed to send message to server: {:?}", err);
+                } else {
+                    debug!("Sent message to server: {}", motion_string);
+                }
+    
+                // Receive response from server
+                handle_client(stream);
+            },
+            Err(err) => {
+                debug!("Failed to connect to server: {:?}", err);
+            }
+        }
+    });
+}
+
+
+fn convert_to_string(timestamp:Duration,motions: Vec<(u64,alvr_common::DeviceMotion)>) -> String {
+    let mut result = String::new();
+    // Iterate over the vector of tuples and format each element into a string
+    
+    for (index, (device_id, motion)) in motions.iter().enumerate() {
+        // Create a JSON object including index, device_id, and motion data
+        let json_object = json!({
+            "index": index,
+            "timestamp": timestamp,
+            "deviceID": device_id,
+            "motion": motion,  // Assuming motion is already serializable
+        });
+        // Serialize the JSON object to a string
+        let json_string = to_string(&json_object).expect("Failed to serialize object to JSON");
+        // Append the JSON string to the result
+        result.push_str(&format!("{}\n", json_string));
+        
+        // let motion_json_string = serde_json::to_string(&motion).expect("Failed to serialize object to JSON");
+        // result.push_str(&format!("Index {}: deviceID: {},motion_json_string: {}\n", index, device_id,motion_json_string));
+    }
+
+    return result
+}
+
+fn handle_client(mut stream: TcpStream) {
+    let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
+    match stream.read(&mut buffer) {
+        Ok(size) => {
+            if size > 0 {
+                // Convert the received bytes to a string
+                let received_str = String::from_utf8_lossy(&buffer[..size]);
+                debug!("Received str {}",received_str);
+                    //  Deserialize the JSON string
+                     match serde_json::from_str::<PredictPose>(&received_str) {
+                        Ok(pred_pose) => {
+                            debug!("Deserialized JSON: {:?}", pred_pose);
+                            // Handle the deserialized device object as needed
+                           
+                        }
+                        Err(e) => {
+                            debug!("Failed to deserialize JSON: {:?}", e);
+                            // Handle deserialization error
+                        }
+                    }
+            } else {
+                debug!("No data received from client");
+            }
+        }
+        Err(e) => {
+            debug!("Failed to receive data: {}", e);
+        }
+    }
 }
