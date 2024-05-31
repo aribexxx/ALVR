@@ -47,15 +47,18 @@ pub fn set_panic_hook() {
             Backtrace::new()
         );
 
-        log::error!("{err_str}");
+        log::error!("ALVR panicked: {err_str}");
 
         #[cfg(all(not(target_os = "android"), feature = "enable-messagebox"))]
-        std::thread::spawn(move || {
-            rfd::MessageDialog::new()
-                .set_title("ALVR panicked")
-                .set_description(&err_str)
-                .set_level(rfd::MessageLevel::Error)
-                .show();
+        std::thread::spawn({
+            let panic_str = panic_info.to_string();
+            move || {
+                rfd::MessageDialog::new()
+                    .set_title("ALVR panicked")
+                    .set_description(&panic_str)
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+            }
         });
     }))
 }

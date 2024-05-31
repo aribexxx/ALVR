@@ -3,7 +3,8 @@ use std::{env, fmt::Write, fs, path::PathBuf};
 
 fn main() {
     let openvr_driver_header_string =
-        fs::read_to_string("../server/cpp/openvr/headers/openvr_driver.h").unwrap();
+        fs::read_to_string(alvr_filesystem::workspace_dir().join("openvr/headers/openvr_driver.h"))
+            .unwrap();
 
     let property_finder = Regex::new(
         r"\tProp_([A-Za-z\d_]+)_(Bool|Int32|Uint64|Float|String|Vector3)[\t ]+= ([0-9]+)",
@@ -20,12 +21,14 @@ fn main() {
         .captures_iter(&openvr_driver_header_string)
         .map(|cap| {
             let code = cap[3].into();
-            let mut name = cap[1].replace('_', "");
-            if code == "1007" {
-                name = "HardwareRevisionString".into();
+            let name = if code == "1007" {
+                "HardwareRevisionString".into()
             } else if code == "1017" {
-                name = "HardwareRevisionUint64".into();
-            }
+                "HardwareRevisionUint64".into()
+            } else {
+                cap[1].replace('_', "")
+            };
+
             PropInfo {
                 name,
                 ty: cap[2].into(),

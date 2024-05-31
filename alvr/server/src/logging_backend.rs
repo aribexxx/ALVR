@@ -1,31 +1,37 @@
 use crate::{FILESYSTEM_LAYOUT, SERVER_DATA_MANAGER};
-use alvr_common::{log::LevelFilter, LogEntry, LogSeverity};
+use alvr_common::{log::LevelFilter, once_cell::sync::Lazy, LogEntry, LogSeverity};
 use alvr_events::{Event, EventType};
 use chrono::Local;
 use fern::Dispatch;
 use std::fs;
-use tokio::sync::broadcast::Sender;
+use tokio::sync::broadcast;
 
-// todo: don't stringify events immediately, use Sender<Event>
-pub fn init_logging(events_sender: Sender<Event>) {
-    let mut log_dispatch = Dispatch::new().format(move |out, message, record| {
-        let maybe_event = format!("{message}");
-        let event_type = if maybe_event.starts_with('{') && maybe_event.ends_with('}') {
-            serde_json::from_str(&maybe_event).unwrap()
-        } else {
-            EventType::Log(LogEntry {
-                severity: LogSeverity::from_log_level(record.level()),
-                content: message.to_string(),
-            })
-        };
-        let event = Event {
-            timestamp: Local::now().format("%H:%M:%S.%f").to_string(),
-            event_type,
-        };
-        out.finish(format_args!("{}", serde_json::to_string(&event).unwrap()));
+static CHANNEL_CAPACITY: usize = 256;
+pub static LOGGING_EVENTS_SENDER: Lazy<broadcast::Sender<Event>> =
+    Lazy::new(|| broadcast::channel(CHANNEL_CAPACITY).0);
 
-        events_sender.send(event).ok();
-    });
+pub fn init_logging() {
+    let mut log_dispatch = Dispatch::new()
+        // Note: meta::target() is in the format <crate>::<module>
+        .filter(|meta| !meta.target().starts_with("mdns_sd"))
+        .format(move |out, message, record| {
+            let maybe_event = format!("{message}");
+            let event_type = if maybe_event.starts_with('{') && maybe_event.ends_with('}') {
+                serde_json::from_str(&maybe_event).unwrap()
+            } else {
+                EventType::Log(LogEntry {
+                    severity: LogSeverity::from_log_level(record.level()),
+                    content: message.to_string(),
+                })
+            };
+            let event = Event {
+                timestamp: Local::now().format("%H:%M:%S.%f").to_string(),
+                event_type,
+            };
+            out.finish(format_args!("{}", serde_json::to_string(&event).unwrap()));
+
+            LOGGING_EVENTS_SENDER.send(event).ok();
+        });
 
     if cfg!(debug_assertions) {
         log_dispatch = log_dispatch.level(LevelFilter::Debug)
@@ -33,7 +39,13 @@ pub fn init_logging(events_sender: Sender<Event>) {
         log_dispatch = log_dispatch.level(LevelFilter::Info);
     }
 
-    if SERVER_DATA_MANAGER.read().settings().logging.log_to_disk {
+    if SERVER_DATA_MANAGER
+        .read()
+        .settings()
+        .extra
+        .logging
+        .log_to_disk
+    {
         log_dispatch = log_dispatch.chain(
             fs::OpenOptions::new()
                 .write(true)

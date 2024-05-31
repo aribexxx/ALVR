@@ -1,20 +1,21 @@
+#[cfg(target_os = "linux")]
+mod linux_steamvr;
+#[cfg(windows)]
+mod windows_steamvr;
+
 use crate::data_sources;
-use alvr_common::{debug, once_cell::sync::Lazy, parking_lot::Mutex};
+use alvr_common::{debug, glam::bool, once_cell::sync::Lazy, parking_lot::Mutex};
 use alvr_filesystem as afs;
 use alvr_session::{DriverLaunchAction, DriversBackup};
 use std::{
     env,
     marker::PhantomData,
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
 use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[cfg(windows)]
-pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn is_steamvr_running() -> bool {
     let mut system = System::new_with_specifics(
@@ -28,41 +29,6 @@ pub fn is_steamvr_running() -> bool {
         != 0
 }
 
-#[cfg(target_os = "linux")]
-pub fn maybe_wrap_vrcompositor_launcher() -> alvr_common::anyhow::Result<()> {
-    use std::fs;
-
-    let steamvr_bin_dir = alvr_server_io::steamvr_root_dir()?
-        .join("bin")
-        .join("linux64");
-    let launcher_path = steamvr_bin_dir.join("vrcompositor");
-
-    // In case of SteamVR update, vrcompositor will be restored
-    if fs::read_link(&launcher_path).is_ok() {
-        fs::remove_file(&launcher_path)?; // recreate the link
-    } else {
-        fs::rename(&launcher_path, steamvr_bin_dir.join("vrcompositor.real"))?;
-    }
-
-    std::os::unix::fs::symlink(
-        afs::filesystem_layout_from_dashboard_exe(&env::current_exe().unwrap())
-            .vrcompositor_wrapper(),
-        &launcher_path,
-    )?;
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn kill_process(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    Command::new("taskkill.exe")
-        .args(["/PID", &pid.to_string(), "/F"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok();
-}
-
 pub fn maybe_kill_steamvr() {
     let mut system = System::new_with_specifics(
         RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
@@ -71,26 +37,28 @@ pub fn maybe_kill_steamvr() {
 
     // first kill vrmonitor, then kill vrserver if it is hung.
 
+    #[allow(unused_variables)]
     for process in system.processes_by_name(&afs::exec_fname("vrmonitor")) {
         debug!("Killing vrmonitor");
 
-        #[cfg(not(windows))]
-        process.kill_with(sysinfo::Signal::Term);
+        #[cfg(target_os = "linux")]
+        linux_steamvr::terminate_process(process);
         #[cfg(windows)]
-        kill_process(process.pid().as_u32());
+        windows_steamvr::kill_process(process.pid().as_u32());
 
         thread::sleep(Duration::from_secs(1));
     }
 
     system.refresh_processes();
 
+    #[allow(unused_variables)]
     for process in system.processes_by_name(&afs::exec_fname("vrserver")) {
         debug!("Killing vrserver");
 
-        #[cfg(not(windows))]
-        process.kill_with(sysinfo::Signal::Term);
+        #[cfg(target_os = "linux")]
+        linux_steamvr::terminate_process(process);
         #[cfg(windows)]
-        kill_process(process.pid().as_u32());
+        windows_steamvr::kill_process(process.pid().as_u32());
 
         thread::sleep(Duration::from_secs(1));
     }
@@ -102,9 +70,16 @@ pub struct Launcher {
 
 impl Launcher {
     pub fn launch_steamvr(&self) {
+        #[cfg(target_os = "linux")]
+        linux_steamvr::linux_hardware_checks();
+
         let mut data_source = data_sources::get_local_data_source();
 
-        let launch_action = &data_source.settings().steamvr_launcher.driver_launch_action;
+        let launch_action = &data_source
+            .settings()
+            .extra
+            .steamvr_launcher
+            .driver_launch_action;
 
         if !matches!(launch_action, DriverLaunchAction::NoAction) {
             let other_drivers_paths = if matches!(
@@ -120,7 +95,6 @@ impl Launcher {
             } else {
                 vec![]
             };
-
             let alvr_driver_dir =
                 afs::filesystem_layout_from_dashboard_exe(&env::current_exe().unwrap())
                     .openvr_driver_root_dir;
@@ -134,27 +108,22 @@ impl Launcher {
         }
 
         #[cfg(target_os = "linux")]
-        alvr_common::show_err(maybe_wrap_vrcompositor_launcher());
+        {
+            let vrcompositor_wrap_result = linux_steamvr::maybe_wrap_vrcompositor_launcher();
+            alvr_common::show_err(linux_steamvr::maybe_wrap_vrcompositor_launcher());
+            if vrcompositor_wrap_result.is_err() {
+                return;
+            }
+        }
 
         if !is_steamvr_running() {
             debug!("SteamVR is dead. Launching...");
 
             #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                Command::new("cmd")
-                    .args(["/C", "start", "steam://rungameid/250820"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .spawn()
-                    .ok();
-            }
-            #[cfg(not(windows))]
-            {
-                Command::new("xdg-open")
-                    .args(["steam://rungameid/250820"])
-                    .spawn()
-                    .ok();
-            }
+            windows_steamvr::start_steamvr();
+
+            #[cfg(target_os = "linux")]
+            linux_steamvr::start_steamvr();
         }
     }
 

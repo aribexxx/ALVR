@@ -19,8 +19,7 @@ const char *encoder(ALVR_CODEC codec) {
     case ALVR_CODEC_HEVC:
         return "hevc_nvenc";
     case ALVR_CODEC_AV1:
-        Warn("AV1 is not supported by NvEnc. Using HEVC instead.");
-        return "hevc_nvenc";
+        return "av1_nvenc";
     }
     throw std::runtime_error("invalid codec " + std::to_string(codec));
 }
@@ -152,6 +151,8 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     // Delay isn't actually a delay instead its how many surfaces to encode at a time
     av_opt_set_int(encoder_ctx->priv_data, "delay", 1, 0);
     av_opt_set_int(encoder_ctx->priv_data, "forced-idr", 1, 0);
+    // work around ffmpeg default not working for older NVIDIA cards
+    av_opt_set_int(encoder_ctx->priv_data, "b_ref_mode", 0, 0);
 
     encoder_ctx->pix_fmt = AV_PIX_FMT_CUDA;
     encoder_ctx->width = width;
@@ -161,6 +162,7 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     encoder_ctx->sample_aspect_ratio = AVRational{1, 1};
     encoder_ctx->max_b_frames = 0;
     encoder_ctx->gop_size = INT16_MAX;
+    encoder_ctx->color_range = Settings::Instance().m_useFullRangeEncoding ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
     auto params = FfiDynamicEncoderParams {};
     params.updated = true;
     params.bitrate_bps = 30'000'000;

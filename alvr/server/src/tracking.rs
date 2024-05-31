@@ -1,19 +1,17 @@
-use crate::{to_ffi_quat, FfiDeviceMotion, FfiHandSkeleton};
 use alvr_common::{
     glam::{EulerRot, Quat, Vec3},
-    DeviceMotion, Pose, HEAD_ID, LEFT_HAND_ID, RIGHT_HAND_ID,
+    DeviceMotion, Pose, BODY_CHEST_ID, BODY_HIPS_ID, BODY_LEFT_ELBOW_ID, BODY_LEFT_FOOT_ID,
+    BODY_LEFT_KNEE_ID, BODY_RIGHT_ELBOW_ID, BODY_RIGHT_FOOT_ID, BODY_RIGHT_KNEE_ID, HAND_LEFT_ID,
+    HAND_RIGHT_ID, HEAD_ID,
 };
 use alvr_session::{
     settings_schema::Switch, HeadsetConfig, PositionRecenteringMode, RotationRecenteringMode,
 };
-use std::{
-    collections::HashMap,
-    f32::consts::{FRAC_PI_2, PI},
-};
+use std::{collections::HashMap, f32::consts::PI};
 
 const DEG_TO_RAD: f32 = PI / 180.0;
 
-fn get_hand_skeleton_offsets(config: &HeadsetConfig) -> (Pose, Pose) {
+pub fn get_hand_skeleton_offsets(config: &HeadsetConfig) -> (Pose, Pose) {
     let left_offset;
     let right_offset;
     if let Switch::Enabled(controllers) = &config.controllers {
@@ -120,13 +118,23 @@ impl TrackingManager {
     ) -> Vec<(u64, DeviceMotion)> {
         let mut device_motion_configs = HashMap::new();
         device_motion_configs.insert(*HEAD_ID, MotionConfig::default());
+        device_motion_configs.extend([
+            (*BODY_CHEST_ID, MotionConfig::default()),
+            (*BODY_HIPS_ID, MotionConfig::default()),
+            (*BODY_LEFT_ELBOW_ID, MotionConfig::default()),
+            (*BODY_RIGHT_ELBOW_ID, MotionConfig::default()),
+            (*BODY_LEFT_KNEE_ID, MotionConfig::default()),
+            (*BODY_LEFT_FOOT_ID, MotionConfig::default()),
+            (*BODY_RIGHT_KNEE_ID, MotionConfig::default()),
+            (*BODY_RIGHT_FOOT_ID, MotionConfig::default()),
+        ]);
 
         if let Switch::Enabled(controllers) = &config.controllers {
             let t = controllers.left_controller_position_offset;
             let r = controllers.left_controller_rotation_offset;
 
             device_motion_configs.insert(
-                *LEFT_HAND_ID,
+                *HAND_LEFT_ID,
                 MotionConfig {
                     pose_offset: Pose {
                         orientation: Quat::from_euler(
@@ -143,7 +151,7 @@ impl TrackingManager {
             );
 
             device_motion_configs.insert(
-                *RIGHT_HAND_ID,
+                *HAND_RIGHT_ID,
                 MotionConfig {
                     pose_offset: Pose {
                         orientation: Quat::from_euler(
@@ -178,9 +186,9 @@ impl TrackingManager {
                 motion.angular_velocity = inverse_origin_orientation * motion.angular_velocity;
 
                 // Apply custom transform
-                let pose_offset = if device_id == *LEFT_HAND_ID && hand_skeletons_enabled[0] {
+                let pose_offset = if device_id == *HAND_LEFT_ID && hand_skeletons_enabled[0] {
                     left_hand_skeleton_offset
-                } else if device_id == *RIGHT_HAND_ID && hand_skeletons_enabled[1] {
+                } else if device_id == *HAND_RIGHT_ID && hand_skeletons_enabled[1] {
                     right_hand_skeleton_offset
                 } else {
                     config.pose_offset
@@ -202,8 +210,8 @@ impl TrackingManager {
                     }
                 }
 
-                if (device_id == *LEFT_HAND_ID && hand_skeletons_enabled[0])
-                    || (device_id == *RIGHT_HAND_ID && hand_skeletons_enabled[1])
+                if (device_id == *HAND_LEFT_ID && hand_skeletons_enabled[0])
+                    || (device_id == *HAND_RIGHT_ID && hand_skeletons_enabled[1])
                 {
                     // On hand tracking, velocities seem to make hands overly jittery
                     motion.linear_velocity = Vec3::ZERO;
@@ -221,138 +229,17 @@ impl TrackingManager {
 
         transformed_motions
     }
-}
 
-pub fn to_openvr_hand_skeleton(
-    config: &HeadsetConfig,
-    device_id: u64,
-    hand_skeleton: [Pose; 26],
-) -> [Pose; 26] {
-    let (left_hand_skeleton_offset, right_hand_skeleton_offset) = get_hand_skeleton_offsets(config);
-
-    // Convert from global to local joint pose. The orientation frame of reference is also
-    // converted from OpenXR to SteamVR (hand-specific!)
-    pub fn local_pose(id: u64, parent: Pose, current: Pose) -> Pose {
-        let o = parent.orientation.conjugate() * current.orientation;
-        let p = parent.orientation.conjugate() * (current.position - parent.position);
-
-        // Convert to SteamVR frame of reference
-        let (orientation, position) = if id == *LEFT_HAND_ID {
-            (
-                Quat::from_xyzw(-o.z, -o.y, -o.x, o.w),
-                Vec3::new(-p.z, -p.y, -p.x),
-            )
-        } else {
-            (
-                Quat::from_xyzw(o.z, o.y, -o.x, o.w),
-                Vec3::new(p.z, p.y, -p.x),
-            )
-        };
-
-        Pose {
-            orientation,
-            position,
+    pub fn transform_hand_skeleton(&self, mut skeleton: [Pose; 26]) -> [Pose; 26] {
+        for pose in &mut skeleton {
+            *pose = self.recenter_pose(*pose);
         }
-    }
 
-    let id = device_id;
-
-    // global joints
-    let gj = hand_skeleton;
-
-    let fixed_g_wrist = Pose {
-        orientation: gj[1].orientation
-            * Quat::from_euler(EulerRot::YXZ, -FRAC_PI_2, FRAC_PI_2, 0.0),
-        position: gj[1].position,
-    };
-
-    [
-        // Palm. NB: this is ignored by SteamVR
-        Pose::default(),
-        // Wrist
-        {
-            let pose_offset = if device_id == *LEFT_HAND_ID {
-                left_hand_skeleton_offset
-            } else {
-                right_hand_skeleton_offset
-            };
-
-            let sign = if id == *LEFT_HAND_ID { -1.0 } else { 1.0 };
-            let orientation = pose_offset.orientation.conjugate()
-                * gj[0].orientation.conjugate()
-                * gj[1].orientation
-                * Quat::from_euler(EulerRot::XZY, PI, sign * FRAC_PI_2, 0.0);
-
-            let position = -pose_offset.position
-                + pose_offset.orientation.conjugate()
-                    * gj[0].orientation.conjugate()
-                    * (gj[1].position - gj[0].position);
-
-            Pose {
-                orientation,
-                position,
-            }
-        },
-        // Thumb
-        local_pose(id, fixed_g_wrist, gj[2]),
-        local_pose(id, gj[2], gj[3]),
-        local_pose(id, gj[3], gj[4]),
-        local_pose(id, gj[4], gj[5]),
-        // Index
-        local_pose(id, fixed_g_wrist, gj[6]),
-        local_pose(id, gj[6], gj[7]),
-        local_pose(id, gj[7], gj[8]),
-        local_pose(id, gj[8], gj[9]),
-        local_pose(id, gj[9], gj[10]),
-        // Middle
-        local_pose(id, fixed_g_wrist, gj[11]),
-        local_pose(id, gj[11], gj[12]),
-        local_pose(id, gj[12], gj[13]),
-        local_pose(id, gj[13], gj[14]),
-        local_pose(id, gj[14], gj[15]),
-        // Ring
-        local_pose(id, fixed_g_wrist, gj[16]),
-        local_pose(id, gj[16], gj[17]),
-        local_pose(id, gj[17], gj[18]),
-        local_pose(id, gj[18], gj[19]),
-        local_pose(id, gj[19], gj[20]),
-        // Little
-        local_pose(id, fixed_g_wrist, gj[21]),
-        local_pose(id, gj[21], gj[22]),
-        local_pose(id, gj[22], gj[23]),
-        local_pose(id, gj[23], gj[24]),
-        local_pose(id, gj[24], gj[25]),
-    ]
-}
-
-pub fn to_ffi_motion(device_id: u64, motion: DeviceMotion) -> FfiDeviceMotion {
-    FfiDeviceMotion {
-        deviceID: device_id,
-        orientation: to_ffi_quat(motion.pose.orientation),
-        position: motion.pose.position.to_array(),
-        linearVelocity: motion.linear_velocity.to_array(),
-        angularVelocity: motion.angular_velocity.to_array(),
+        skeleton
     }
 }
 
-pub fn to_ffi_skeleton(skeleton: [Pose; 26]) -> FfiHandSkeleton {
-    FfiHandSkeleton {
-        jointRotations: skeleton
-            .iter()
-            .map(|j| to_ffi_quat(j.orientation))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap(),
-        jointPositions: skeleton
-            .iter()
-            .map(|j| j.position.to_array())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap(),
-    }
-}
-
-// Head and eyesmust be in the same (nt recentered) convention
+// Head and eyes must be in the same (not recentered) convention
 pub fn to_local_eyes(
     raw_global_head: Pose,
     raw_global_eyes: [Option<Pose>; 2],
