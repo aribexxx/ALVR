@@ -133,7 +133,7 @@ extern "C" fn driver_ready_idle(set_default_chap: bool) {
                         .then_some(right_openvr_hand_skeleton)
                         .flatten()
                         .map(tracking::to_ffi_skeleton);
-
+                    //TODO: here to replace tracking motion to predicted motion and then setTracking then steamvr will use prediction instead.
                     let ffi_motions = tracking
                         .device_motions
                         .iter()

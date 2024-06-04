@@ -9,6 +9,10 @@ use crate::{
     tracking::{self, TrackingManager},
     ConnectionContext, ServerCoreEvent, ViewsConfig, SERVER_DATA_MANAGER,
 };
+use std::net::TcpStream;
+use serde::{Serialize,Deserialize};
+use serde_json::{json, to_string};
+
 use alvr_audio::AudioDevice;
 use alvr_common::{
     con_bail, debug, error,
@@ -36,6 +40,8 @@ use alvr_sockets::{
 use std::{
     collections::HashMap,
     net::IpAddr,
+    io::Read,
+    io::Write,
     process::Command,
     sync::{mpsc::RecvTimeoutError, Arc},
     thread,
@@ -45,6 +51,7 @@ use std::{
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PredictPose {
+    device_id:u64,
     timestamp:i64,
     predicted_pose: Vec<f64>
 }
@@ -955,9 +962,9 @@ fn connection_pipeline(
 
                 if let Some(stats) = &mut *ctx.statistics_manager.lock() {
                     stats.report_tracking_received(tracking.target_timestamp);
-                    //TODO: add here send_to_pred
-                    send_to_predictor_thread(timestamp, motions);
                     
+                    send_to_predictor_thread(tracking.target_timestamp.clone(), motions.clone());
+                    //TODO: replace motions in this events_queue() to see if steamvr use prediction instead.
                     ctx.events_queue
                         .lock()
                         .push_back(ServerCoreEvent::Tracking {
@@ -1435,6 +1442,23 @@ fn convert_to_string(timestamp:Duration,motions: Vec<(u64,alvr_common::DeviceMot
     return result
 }
 
+fn convert_to_device_motion(){
+    
+}
+
+// fn replace_with_prediction_in_motion(pred_pose:PredictPose,tracking_timestamp:Duration)-> Vec<(u64, alvr_common::DeviceMotion)> {
+//   let predicted_motions: Vec<(u64, alvr_common::DeviceMotion)> = Vec::new();
+//   if(pred_pose.timestamp == tracking_timestamp) {
+//     //when prediction timstamp match timestamp sent from client, then we can put it in the motions array.
+//         // Initialize some DeviceMotion instances
+//         let pose = Pose::new(pred_pose.predicted_pose);
+//         let device_motion = alvr_common::DeviceMotion::new();
+//     // predicted_motions.push(pred_pose.device_id,pred_pose.predicted_pose);
+ 
+//   }
+//   return predicted_motions;
+// }
+
 fn handle_client(mut stream: TcpStream) {
     let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
     match stream.read(&mut buffer) {
@@ -1448,6 +1472,29 @@ fn handle_client(mut stream: TcpStream) {
                         Ok(pred_pose) => {
                             debug!("Deserialized JSON: {:?}", pred_pose);
                             // Handle the deserialized device object as needed
+                            // TODO: PredictPose need to convert to motions
+                            
+
+                            // ctx.events_queue
+                            // .lock()
+                            // .push_back(ServerCoreEvent::Tracking {
+                            //     tracking: Box::new(Tracking {
+                            //         target_timestamp: tracking.target_timestamp,
+                            //         //TODO:???? what is device_motions:motions looks like? one tuple or many?
+                            //         device_motions: replace_with_prediction_in_motion(pred_pose,tracking.target_timestamp),
+                            //         hand_skeletons: if controllers_config
+                            //             .as_ref()
+                            //             .map(|c| c.enable_skeleton)
+                            //             .unwrap_or(false)
+                            //         {
+                            //             hand_skeletons
+                            //         } else {
+                            //             [None, None]
+                            //         },
+                            //         face_data: tracking.face_data,
+                            //     }),
+                            //     controllers_pose_time_offset: stats.tracker_pose_time_offset(),
+                            // });
                            
                         }
                         Err(e) => {
