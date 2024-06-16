@@ -9,9 +9,10 @@ use crate::{
     tracking::{self, TrackingManager},
     ConnectionContext, ServerCoreEvent, ViewsConfig, SERVER_DATA_MANAGER,
 };
-use std::net::TcpStream;
+use std::net::{TcpStream,TcpListener};
 use serde::{Serialize,Deserialize};
 use serde_json::{json, to_string};
+use std::sync::mpsc::{self, Receiver,Sender};
 
 use alvr_audio::AudioDevice;
 use alvr_common::{
@@ -828,6 +829,21 @@ fn connection_pipeline(
                         BodyTrackingSink::new(config.sink, settings.connection.osc_local_port).ok()
                     });
 
+
+                // Set up the listener for incoming connections
+                let listener = TcpListener::bind("127.0.0.1:12345").expect("Failed to bind address");
+
+                // Wait for a client to connect
+                let (stream, _) = listener.accept().expect("Failed to accept connection");
+            
+                // Create a channel to send data from the main thread to the client handler
+                let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+            
+                    // Spawn a new thread to handle the client
+                thread::spawn(move || {
+                        send_to_predictor(stream, rx);
+                    });
+
             while is_streaming(&client_hostname) {
                 let data = match tracking_receiver.recv(STREAMING_RECV_TIMEOUT) {
                     Ok(tracking) => tracking,
@@ -961,9 +977,15 @@ fn connection_pipeline(
                 }
 
                 if let Some(stats) = &mut *ctx.statistics_manager.lock() {
-                    stats.report_tracking_received(tracking.target_timestamp);
-                    
-                    send_to_predictor_thread(tracking.target_timestamp.clone(), motions.clone());
+                    stats.report_tracking_received(tracking.target_timestamp);    
+
+                    let motioncopy = motions.clone();
+                    // Send the data to the client handler thread
+                    let motion_string: String = convert_to_string(chrono::Local::now().timestamp_millis(), motioncopy);
+                    if tx.send(motion_string.into_bytes()).is_err() {
+                        debug!("Failed to send data to the client handler");
+                    }
+
                     //TODO: replace motions in this events_queue() to see if steamvr use prediction instead.
                     ctx.events_queue
                         .lock()
@@ -1387,38 +1409,46 @@ fn connection_pipeline(
 }
 
 
-fn send_to_predictor_thread(timestamp: Duration, motions: Vec<(u64, alvr_common::DeviceMotion)>) {
-    thread::spawn(move || {
-        // Define host and port
-        let host = "127.0.0.1"; // Loopback address for localhost
-        let port = 12345;       // Same port as the server
-        debug!("send_to_predictor");
-
-        // Connect to the server
-        match TcpStream::connect((host, port)) {
-            Ok(mut stream) => {
-                debug!("Connected to server at {}:{}", host, port);
-    
-                // Send data to server
-                let motion_string: String = convert_to_string(timestamp, motions);
-                if let Err(err) = stream.write_all(motion_string.as_bytes()) {
-                    debug!("Failed to send message to server: {:?}", err);
-                } else {
-                    debug!("Sent message to server: {}", motion_string);
-                }
-    
-                // Receive response from server
-                handle_client(stream);
-            },
-            Err(err) => {
-                debug!("Failed to connect to server: {:?}", err);
-            }
+fn send_to_predictor(mut stream: TcpStream, rx: Receiver<Vec<u8>>) {
+    for data in rx {
+        if let Err(e) = stream.write_all(&data) {
+            eprintln!("Failed to send data: {}", e);
+            break;
         }
-    });
+    }
 }
 
+// fn send_to_predictor_thread(mut stream: TcpStream, timestamp: i64, motions: Vec<(u64, alvr_common::DeviceMotion)>) {
+//         // Define host and port
+//         // let host = "127.0.0.1"; // Loopback address for localhost
+//         // let port = 12345;       // Same port as the server
+//         // debug!("send_to_predictor");
 
-fn convert_to_string(timestamp:Duration,motions: Vec<(u64,alvr_common::DeviceMotion)>) -> String {
+//         // Connect to the server
+//         // match TcpStream::connect((host, port)) {
+//         //     Ok(mut stream) => {
+//         //         debug!("Connected to server at {}:{}", host, port);
+    
+//                 // Send data to server
+//                 let motion_string: String = convert_to_string(timestamp, motions);
+
+//                 if let Err(err) = stream.write_all(motion_string.as_bytes()) {
+//                     debug!("Failed to send message to server: {:?}", err);
+//                 } else {
+//                     debug!("Sent message to server: {}", motion_string);
+//                 }
+    
+//             //     // Receive response from server
+//             //     handle_client(stream);
+//             // },
+//             // Err(err) => {
+//             //     debug!("Failed to connect to server: {:?}", err);
+//             // }
+//  }
+
+
+
+fn convert_to_string(timestamp:i64,motions: Vec<(u64,alvr_common::DeviceMotion)>) -> String {
     let mut result = String::new();
     // Iterate over the vector of tuples and format each element into a string
     
@@ -1442,22 +1472,6 @@ fn convert_to_string(timestamp:Duration,motions: Vec<(u64,alvr_common::DeviceMot
     return result
 }
 
-fn convert_to_device_motion(){
-    
-}
-
-// fn replace_with_prediction_in_motion(pred_pose:PredictPose,tracking_timestamp:Duration)-> Vec<(u64, alvr_common::DeviceMotion)> {
-//   let predicted_motions: Vec<(u64, alvr_common::DeviceMotion)> = Vec::new();
-//   if(pred_pose.timestamp == tracking_timestamp) {
-//     //when prediction timstamp match timestamp sent from client, then we can put it in the motions array.
-//         // Initialize some DeviceMotion instances
-//         let pose = Pose::new(pred_pose.predicted_pose);
-//         let device_motion = alvr_common::DeviceMotion::new();
-//     // predicted_motions.push(pred_pose.device_id,pred_pose.predicted_pose);
- 
-//   }
-//   return predicted_motions;
-// }
 
 fn handle_client(mut stream: TcpStream) {
     let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
