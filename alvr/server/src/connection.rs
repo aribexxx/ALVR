@@ -9,21 +9,14 @@ use crate::{
     tracking::{self, TrackingManager},
     ConnectionContext, ServerCoreEvent, ViewsConfig, SERVER_DATA_MANAGER,
 };
-use std::net::{TcpStream,TcpListener};
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string};
-use std::sync::mpsc::{self, Receiver,Sender};
+use std::{net::{TcpListener, TcpStream}, primitive};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use alvr_audio::AudioDevice;
 use alvr_common::{
-    con_bail, debug, error,
-    glam::{Quat, UVec2, Vec2, Vec3},
-    info,
-    parking_lot::{Condvar, Mutex, RwLock},
-    settings_schema::Switch,
-    warn, AnyhowToCon, ConResult, ConnectionError, ConnectionState, LifecycleState, Pose,
-    BUTTON_INFO, CONTROLLER_PROFILE_INFO, DEVICE_ID_TO_PATH, HAND_LEFT_ID, HAND_RIGHT_ID, HEAD_ID,
-    QUEST_CONTROLLER_PROFILE_PATH,
+    con_bail, debug, error, glam::{Quat, UVec2, Vec2, Vec3}, info, parking_lot::{Condvar, Mutex, RwLock}, settings_schema::Switch, warn, AnyhowToCon, ConResult, ConnectionError, ConnectionState, DeviceMotion, LifecycleState, Pose, BUTTON_INFO, CONTROLLER_PROFILE_INFO, DEVICE_ID_TO_PATH, HAND_LEFT_ID, HAND_RIGHT_ID, HEAD_ID, QUEST_CONTROLLER_PROFILE_PATH
 };
 use alvr_events::{ButtonEvent, EventType, TrackingEvent};
 use alvr_packets::{
@@ -40,21 +33,20 @@ use alvr_sockets::{
 };
 use std::{
     collections::HashMap,
-    net::IpAddr,
     io::Read,
     io::Write,
+    net::IpAddr,
     process::Command,
     sync::{mpsc::RecvTimeoutError, Arc},
     thread,
     time::{Duration, Instant},
 };
 
-
-#[derive(Serialize, Deserialize, Debug)]
-struct PredictPose {
-    device_id:u64,
-    timestamp:i64,
-    predicted_pose: Vec<f64>
+#[derive(Serialize, Deserialize, Debug,Clone, Copy)]
+pub struct PredictMotion {
+    timestamp: i64,
+    device_id: u64,
+    predicted_pose: alvr_common::DeviceMotion,
 }
 
 const RETRY_CONNECT_MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -828,38 +820,12 @@ fn connection_pipeline(
                     .and_then(|config| {
                         BodyTrackingSink::new(config.sink, settings.connection.osc_local_port).ok()
                     });
-
-
-                // // Set up the listener for incoming connections
-                // let listener = TcpListener::bind("127.0.0.1:12345").expect("Failed to bind address");
-
-                // // Wait for a client to connect
-                // let (stream, _) = listener.accept().expect("Failed to accept connection");
-                
-                // Define host and port
-                let host = "127.0.0.1"; // Loopback address for localhost
-                let port = 12345;       // Same port as the server
-                // Create a channel to send data from the main thread to the client handler
-                let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-                thread::spawn(move || {
-                match TcpStream::connect((host, port)) {
-                    Ok(mut stream) => {
-                        debug!("Connected to server at {}:{}", host, port);
-                        // Spawn a new thread to handle the client
-                        // thread::spawn(move || {
-                            send_to_predictor(stream, rx);
-                        // });
             
-                    },
-                    Err(err) => {
-                        debug!("Failed to connect to server: {:?}", err);
-                    }
-                }
-                }
-                );
-             
-            
+            let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
 
+            let predict_motions = predictor_socket_connect(rx);
+            let predicted_motions_clone = Arc::clone(&predict_motions);
+            
 
             while is_streaming(&client_hostname) {
                 let data = match tracking_receiver.recv(STREAMING_RECV_TIMEOUT) {
@@ -870,6 +836,13 @@ fn connection_pipeline(
                 let Ok(tracking) = data.get_header() else {
                     return;
                 };
+                // send motion before prediction
+                let motioncopy = tracking.device_motions.clone();
+                let motion_string: String =
+                    convert_to_string(chrono::Local::now().timestamp_micros(), motioncopy);
+                if tx.send(motion_string.into_bytes()).is_err() {
+                    debug!("Failed to send data to the client handler");
+                }
 
                 let controllers_config = {
                     let data_lock = SERVER_DATA_MANAGER.read();
@@ -882,15 +855,23 @@ fn connection_pipeline(
                 };
 
                 let motions;
+                for pose in &tracking.device_motions{
+                    debug!("tracking pose: {:?}/n",pose)
+                }
+            
+                debug!("predicted pose: {:?}/n",predicted_motions_clone.lock());
+                
                 let hand_skeletons;
                 {
                     let mut tracking_manager_lock = tracking_manager.lock();
                     let data_manager_lock = SERVER_DATA_MANAGER.read();
                     let headset_config = &data_manager_lock.settings().headset;
-
+                    
+                    // debug!("tracking pose: {}/n predicted pose: {}",&tracking.device_motions,&predicted_motions_clone.lock());
                     motions = tracking_manager_lock.transform_motions(
                         headset_config,
                         &tracking.device_motions,
+                        // &predicted_motions_clone.lock(),
                         [
                             tracking.hand_skeletons[0].is_some(),
                             tracking.hand_skeletons[1].is_some(),
@@ -994,13 +975,13 @@ fn connection_pipeline(
                 }
 
                 if let Some(stats) = &mut *ctx.statistics_manager.lock() {
-                    stats.report_tracking_received(tracking.target_timestamp);    
+                    stats.report_tracking_received(tracking.target_timestamp);
 
-                    let motioncopy = motions.clone();
-                    let motion_string: String = convert_to_string(chrono::Local::now().timestamp_micros(), motioncopy);
-                    if tx.send(motion_string.into_bytes()).is_err() {
-                        debug!("Failed to send data to the client handler");
-                    }
+                    // let motioncopy = motions.clone();
+                    // let motion_string: String = convert_to_string(chrono::Local::now().timestamp_micros(), motioncopy);
+                    // if tx.send(motion_string.into_bytes()).is_err() {
+                    //     debug!("Failed to send data to the client handler");
+                    // }
 
                     //TODO: replace motions in this events_queue() to see if steamvr use prediction instead.
                     ctx.events_queue
@@ -1424,92 +1405,135 @@ fn connection_pipeline(
     Ok(())
 }
 
+fn predictor_socket_connect(rx:Receiver<Vec<u8>>)->  Arc<Mutex<Vec<(u64, DeviceMotion)>>> {
+    // Define host and port
+    let host = "127.0.0.1"; // Loopback address for localhost
+    let port = 12345; // Same port as the server
+    // let mut predicted_motions = vec![];
+    let predicted_motions = Arc::new(Mutex::new(vec![]));
+    let predicted_motions_clone = Arc::clone(&predicted_motions);
+    thread::spawn(move || {
+        match TcpStream::connect((host, port)) {
+            Ok(mut stream) => {
+                debug!("Connected to server at {}:{}", host, port);
+                loop {
+                    debug!("send_to_predictor");
+                    match rx.recv() {
+                        Ok(message) => {
+                            // Attempt to convert the byte vector to a String
+                            debug!("sending from rx");
+                            if let Err(e) = stream.write_all(message.as_slice()) {
+                                debug!("Failed to send all data: {}", e);
+                            }
+                        }
+                        Err(e) => debug!("Error receiving message: {:?}", e),
+                    }
 
-fn send_to_predictor(mut stream: TcpStream, rx: Receiver<Vec<u8>>) {
-    for data in rx {
-        if let Err(e) = stream.write_all(&data) {
-            eprintln!("Failed to send data: {}", e);
-            break;
+                    debug!("handling client");
+                    let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
+                    match stream.read(&mut buffer) {
+                        Ok(size) => {
+                            debug!("handling client3");
+                            if size > 0 {
+                                // Convert the received bytes to a string
+                                let received_str = String::from_utf8_lossy(&buffer[..size]);
+                                debug!("Received str {}", received_str);
+                                //  Deserialize the JSON string
+                                match serde_json::from_str::<PredictMotion>(&received_str) {
+                                    Ok(mut pred_motions) => {
+                                        debug!("Deserialized JSON: {:?}", pred_motions);
+                                        let mut predictions = predicted_motions_clone.lock();
+                                        predictions.push((pred_motions.device_id, pred_motions.predicted_pose));
+                                    }
+                                    Err(e) => {
+                                        debug!("Failed to deserialize JSON: {:?}", e);
+                                        // Handle deserialization error
+                                    }
+                                }
+                            } else {
+                                debug!("No data received from client");
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to receive data: {}", e);
+                        }
+                    }
+                }
+                
+            }
+            Err(err) => {
+                debug!("Failed to connect to server: {:?}", err);
+            }
         }
-    }
+    });
+    predicted_motions
 }
 
+// fn send_to_predictor(mut stream: TcpStream, rx: Receiver<Vec<u8>>) {
+//     debug!("send_to_predictor");
+//     for data in rx {
+//         debug!("Attempting to send data: {:?}", &data);
+//         if let Err(e) = stream.write_all(&data) {
+//             eprintln!("Failed to send all data: {}", e);
+//             break;
+//         }
+//         debug!("Data sent successfully");
+//     }
+// }
 
-
-fn convert_to_string(timestamp:i64,motions: Vec<(u64,alvr_common::DeviceMotion)>) -> String {
+fn convert_to_string(timestamp: i64, motions: Vec<(u64, alvr_common::DeviceMotion)>) -> String {
     let mut result = String::new();
     // Iterate over the vector of tuples and format each element into a string
-    
+
     for (index, (device_id, motion)) in motions.iter().enumerate() {
         // Create a JSON object including index, device_id, and motion data
         let json_object = json!({
             "index": index,
             "timestamp": timestamp,
-            "deviceID": device_id,
+            "device_id": device_id,
             "motion": motion,  // Assuming motion is already serializable
         });
         // Serialize the JSON object to a string
         let json_string = to_string(&json_object).expect("Failed to serialize object to JSON");
         // Append the JSON string to the result
         result.push_str(&format!("{}\n", json_string));
-        
+
         // let motion_json_string = serde_json::to_string(&motion).expect("Failed to serialize object to JSON");
         // result.push_str(&format!("Index {}: deviceID: {},motion_json_string: {}\n", index, device_id,motion_json_string));
     }
 
-    return result
+    return result;
 }
 
+// fn handle_client(mut stream: TcpStream) {
+//     debug!("handling client");
+//     let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
+//     match stream.read(&mut buffer) {
 
-fn handle_client(mut stream: TcpStream) {
-    let mut buffer = vec![0; 1024]; // Create a buffer with 1024 bytes
-    match stream.read(&mut buffer) {
-        Ok(size) => {
-            if size > 0 {
-                // Convert the received bytes to a string
-                let received_str = String::from_utf8_lossy(&buffer[..size]);
-                debug!("Received str {}",received_str);
-                    //  Deserialize the JSON string
-                     match serde_json::from_str::<PredictPose>(&received_str) {
-                        Ok(pred_pose) => {
-                            debug!("Deserialized JSON: {:?}", pred_pose);
-                            // Handle the deserialized device object as needed
-                            // TODO: PredictPose need to convert to motions
-                            
+//         Ok(size) => {
+//             debug!("handling client3");
+//             if size > 0 {
+//                 // Convert the received bytes to a string
+//                 let received_str = String::from_utf8_lossy(&buffer[..size]);
+//                 debug!("Received str {}",received_str);
+//                     //  Deserialize the JSON string
+//                      match serde_json::from_str::<PredictPose>(&received_str) {
+//                         Ok(pred_pose) => {
+//                             debug!("Deserialized JSON: {:?}", pred_pose);
+//                             // Handle the deserialized device object as needed
 
-                            // ctx.events_queue
-                            // .lock()
-                            // .push_back(ServerCoreEvent::Tracking {
-                            //     tracking: Box::new(Tracking {
-                            //         target_timestamp: tracking.target_timestamp,
-                            //         //TODO:???? what is device_motions:motions looks like? one tuple or many?
-                            //         device_motions: replace_with_prediction_in_motion(pred_pose,tracking.target_timestamp),
-                            //         hand_skeletons: if controllers_config
-                            //             .as_ref()
-                            //             .map(|c| c.enable_skeleton)
-                            //             .unwrap_or(false)
-                            //         {
-                            //             hand_skeletons
-                            //         } else {
-                            //             [None, None]
-                            //         },
-                            //         face_data: tracking.face_data,
-                            //     }),
-                            //     controllers_pose_time_offset: stats.tracker_pose_time_offset(),
-                            // });
-                           
-                        }
-                        Err(e) => {
-                            debug!("Failed to deserialize JSON: {:?}", e);
-                            // Handle deserialization error
-                        }
-                    }
-            } else {
-                debug!("No data received from client");
-            }
-        }
-        Err(e) => {
-            debug!("Failed to receive data: {}", e);
-        }
-    }
-}
+//                         }
+//                         Err(e) => {
+//                             debug!("Failed to deserialize JSON: {:?}", e);
+//                             // Handle deserialization error
+//                         }
+//                     }
+//             } else {
+//                 debug!("No data received from client");
+//             }
+//         }
+//         Err(e) => {
+//             debug!("Failed to receive data: {}", e);
+//         }
+//     }
+// }

@@ -230,6 +230,25 @@ impl TrackingManager {
         transformed_motions
     }
 
+    //TODO: 
+    // pub fn replace_with_predicted_motion(prediction: PredictMotion)-> Vec<(u64, DeviceMotion)> {
+    //     let mut prediction_motions = vec![];
+    //     for &(device_id, mut motion) in device_motions {
+    //         if device_id == *HEAD_ID {
+    //             // motion.pose = 
+    //         }
+    //         if device_id == *HAND_LEFT_ID {
+           
+    //         }
+    //         if device_id == *HAND_RIGHT_ID {
+               
+    //         }
+
+
+    //     }
+    //     prediction_motions
+    // }
+
     pub fn transform_hand_skeleton(&self, mut skeleton: [Pose; 26]) -> [Pose; 26] {
         for pose in &mut skeleton {
             *pose = self.recenter_pose(*pose);
