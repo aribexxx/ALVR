@@ -11,6 +11,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string};
+
+use tokio::runtime::Runtime;
+use tokio::task;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::{
     net::{TcpListener, TcpStream},
@@ -18,7 +21,7 @@ use std::{
     ptr::null,
 };
 
-use csv::{Writer, WriterBuilder};
+// use csv::{Writer, WriterBuilder};
 use std::error::Error;
 use std::fs::File;
 
@@ -402,8 +405,8 @@ fn try_connect(
 
     Ok(())
 }
-
-fn connection_pipeline(
+#[tokio::main]
+async fn connection_pipeline(
     ctx: Arc<ConnectionContext>,
     lifecycle_state: Arc<RwLock<LifecycleState>>,
     mut proto_socket: ProtoControlSocket,
@@ -802,8 +805,9 @@ fn connection_pipeline(
 
     let tracking_manager = Arc::new(Mutex::new(TrackingManager::new()));
     let hand_gesture_manager = Arc::new(Mutex::new(HandGestureManager::new()));
-
-    let tracking_receive_thread = thread::spawn({
+    
+    // let rt = Runtime::new().unwrap();
+    let tracking_receive_thread = task::spawn({
         let ctx = Arc::clone(&ctx);
         let tracking_manager = Arc::clone(&tracking_manager);
         let hand_gesture_manager = Arc::clone(&hand_gesture_manager);
@@ -817,7 +821,13 @@ fn connection_pipeline(
             });
 
         let client_hostname = client_hostname.clone();
-        move || {
+        async move {
+        // let runtime = Runtime::new().unwrap();
+        // rt.block_on(async {
+        task::spawn(
+           
+            async move {
+        // move || {
             let mut face_tracking_sink =
                 settings
                     .headset
@@ -841,10 +851,24 @@ fn connection_pipeline(
                 Sender<Vec<(u64, DeviceMotion)>>,
                 Receiver<Vec<(u64, DeviceMotion)>>,
             ) = mpsc::channel();
-            predictor_socket_connect(rx, Arc::new(tx1));
-            let is_predictor_on = true;
-            // let rx1_clone = Arc::new(Mutex::new(rx1));
-           
+
+    
+
+                // Wrap the Receiver in an Arc<Mutex<Receiver<T>>>
+            let rx1_ = Arc::new(Mutex::new(rx1));
+
+            // Clone the Arc to share the Receiver
+            let rx1_clone = Arc::clone(&rx1_);
+            
+
+              // Create a new Tokio runtime
+
+            task::spawn(
+                async move {
+                    predictor_socket_connect(rx, Arc::new(tx1)).await;
+                }
+            );
+         
 
             while is_streaming(&client_hostname) {
                 let data = match tracking_receiver.recv(STREAMING_RECV_TIMEOUT) {
@@ -862,9 +886,23 @@ fn connection_pipeline(
                     " to predictor: timestamp:{:?}, tracking pose: {:?}/n",
                     &timestamp, &tracking.device_motions
                 );
-                if tx.send(motion_string.into_bytes()).is_err() {
-                    debug!("Failed to send data to the client handler");
-                }
+
+                let tx_ = Arc::new(tx.clone());
+       
+                task::spawn(
+                   
+                    async move {
+                        loop {
+                            let tx_clone = Arc::clone(&tx_);
+                            if tx_clone.send(motion_string.clone().into_bytes()).is_err() {
+                                debug!("Failed
+                                 to send data to the client handler");
+                            }
+                        }
+
+                    }
+                );
+
 
                 let controllers_config = {
                     let data_lock = SERVER_DATA_MANAGER.read();
@@ -876,7 +914,7 @@ fn connection_pipeline(
                         .into_option()
                 };
 
-                let mut motions = Vec::new();
+                let  mut motions = Vec::new();
                 let hand_skeletons;
                 {
                     //TODO: fix here as well, where to call this recieve???
@@ -889,30 +927,33 @@ fn connection_pipeline(
                         " to render tracking: timestamp:{:?}, tracking pose: {:?}/n",
                         &timestamp, &tracking.device_motions
                     );
-                    // debug!("tracking pose: {}/n predicted pose: {}",&tracking.device_motions,&predicted_motions_clone.lock());
 
-                     // Initialize the buffer with a size of 10
-                    // let mut buffer = Arc::new(Mutex::new(Vec::with_capacity(3)));
+                    let rx1_ = Arc::clone(&rx1_clone);
+
+                    let (tx2, rx2): (
+                        Sender<Vec<(u64, DeviceMotion)>>,
+                        Receiver<Vec<(u64, DeviceMotion)>>,
+                    ) = mpsc::channel();
                     
-                    // let rx1 = Arc::clone(&rx1_clone);
+                    task::spawn(
+                        async move {
+                            loop {                            
+                                match rx1_.lock().recv(){
+                                Ok(pred_motion) => 
+                                {
+                                    debug!("receiving motion data :{:?}",pred_motion);
 
+                                // if let Err(e) = tx2.send(pred_motion){
+                                //     debug!("Tx2 sending Erro: {:?}",e);
+                                // };
+                                
+                            }
+                                Err(e) => debug!("Error is :{:?}",e),
+                            }
+                        }
+                        }
+                    );
                     
-                     debug!("pppredict : {:?}",rx1.recv());
-                 
-                        // Attempt to receive data
-                        // let predict_motion = match rx1.try_recv() {
-                        //     Ok(data) => Some(data),
-                        //     Err(TryRecvError::Empty) => {
-                        //         debug!("Channel is empty. No data received.");
-                        //         None
-                        //     }
-                        //     Err(TryRecvError::Disconnected) => {
-                        //         debug!("Channel is disconnected.");
-                        //         None
-                        //     }
-                        // };
-
-
                     // if let Some(data) = predict_motion {
                     //     // Use the data here
                     //     debug!("Received data: {:?}", data);
@@ -932,30 +973,33 @@ fn connection_pipeline(
                     // }
 
                 //     if !predict_motion.is_empty() {
-                    // motions = tracking_manager_lock.transform_motions(
-                    //     headset_config,
-                    //     &predict_motion,
-                    //     // &tracking.device_motions,s
-                    //     [
-                    //         tracking.hand_skeletons[0].is_some(),
-                    //         tracking.hand_skeletons[1].is_some(),
-                    //     ],
-                    // );
+                   
+
+
                 // }
                 // else {
-                    // //TODO: might need to wrap rx1.recv() in a seperate thread so that it won't block rendering to Quest.
-                    motions = tracking_manager_lock.transform_motions(
-                        headset_config,
-                        // &predict_motion.lock(),
-                        &tracking.device_motions,
-                        [
-                            tracking.hand_skeletons[0].is_some(),
-                            tracking.hand_skeletons[1].is_some(),
-                        ],
-                    );
-                // }
+              
+                        // match rx2.recv(){
+                        //     Ok(pred_motion) => 
+                        //         {
+                        //             debug!("building motion{:?}",pred_motion);
 
-                    
+                                    
+                        //     }
+                        //         Err(e) => debug!("Error is :{:?}",e),
+                        // }
+
+                        motions = tracking_manager_lock.transform_motions(
+                            headset_config,
+                      
+                            // &pred_motion,
+                            &tracking.device_motions,
+                            [
+                                tracking.hand_skeletons[0].is_some(),
+                                tracking.hand_skeletons[1].is_some(),
+                            ],
+                        );
+
                     hand_skeletons = [
                         tracking.hand_skeletons[0]
                             .map(|s| tracking_manager_lock.transform_hand_skeleton(s)),
@@ -963,6 +1007,7 @@ fn connection_pipeline(
                             .map(|s| tracking_manager_lock.transform_hand_skeleton(s)),
                     ];
                 };
+                
 
                 // Note: using the raw unrecentered head
                 let local_eye_gazes = tracking
@@ -1082,6 +1127,10 @@ fn connection_pipeline(
                 }
             }
         }
+    );
+        // });
+}
+        
     });
 
     let statistics_thread = thread::spawn({
@@ -1467,7 +1516,7 @@ fn connection_pipeline(
     video_send_thread.join().ok();
     game_audio_thread.join().ok();
     microphone_thread.join().ok();
-    tracking_receive_thread.join().ok();
+    tracking_receive_thread.await.ok();
     statistics_thread.join().ok();
     control_receive_thread.join().ok();
     stream_receive_thread.join().ok();
@@ -1481,14 +1530,14 @@ fn connection_pipeline(
     Ok(())
 }
 
-fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u64, DeviceMotion)>>>) {
+async fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u64, DeviceMotion)>>>) {
     // Define host and port
     let host = "127.0.0.1"; // Loopback address for localhost
     let port = 12345; // Same port as the server
                       // let mut predicted_motions = vec![];
                       // let predicted_motions = Arc::new(Mutex::new(vec![]));
                       // let predicted_motions_clone = Arc::clone(&predicted_motions);
-    thread::spawn(move || {
+    tokio::spawn(async move  {
         loop {
         match TcpStream::connect((host, port)) {
             Ok(mut stream) => {
@@ -1522,8 +1571,7 @@ fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u64, Dev
                                 match serde_json::from_str::<PredictMotion>(&received_str) {
                                     Ok(mut pred_motions) => {
                                         debug!("Deserialized JSON: {:?}", pred_motions);
-                                        //TODO: still unable to write to csv in rust
-                                        write_to_csv(&pred_motions, "aaa.csv");
+
                                         // let mut predictions = predicted_motions_clone.lock();
                                         //TODO: Fix this part, we need to get rid of old data from the list, use consumer and producer. Need also create a buffer
                                         debug!(" from predictor: timestamp:{:?}, tracking pose: {:?}/n",pred_motions.timestamp,pred_motions.predicted_pose);
@@ -1593,12 +1641,12 @@ fn convert_to_string(timestamp: &i64, motions: &Vec<(u64, alvr_common::DeviceMot
 }
 
 
-fn write_to_csv(pred_motion: &PredictMotion, file_path: &str) {
-    let file = File::create(file_path).expect("Unable to create file");
-    let mut wtr = WriterBuilder::new().has_headers(false).from_writer(file);
+// fn write_to_csv(pred_motion: &PredictMotion, file_path: &str) {
+//     let file = File::create(file_path).expect("Unable to create file");
+//     let mut wtr = WriterBuilder::new().has_headers(false).from_writer(file);
 
-    // Write record
-    wtr.serialize(pred_motion).expect("Unable to write record");
+//     // Write record
+//     wtr.serialize(pred_motion).expect("Unable to write record");
 
-    wtr.flush().expect("Unable to flush writer");
-}
+//     wtr.flush().expect("Unable to flush writer");
+// }
