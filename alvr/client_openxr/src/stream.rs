@@ -1,3 +1,9 @@
+use std::{
+    io::Read,
+    io::Write,
+    net::IpAddr,
+    thread
+};
 use crate::{
     from_xr_pose,
     graphics::{self, CompositionLayerBuilder},
@@ -490,6 +496,12 @@ fn stream_input_loop(
             ));
         }
 
+        //TODO: instead of sending to server, send to predictor
+        // view_params : head pose
+        // device_motion: left and right controller , and body tracking
+
+        //start a std thread here and send_Tracking to socket
+        
         core_ctx.send_tracking(
             target_timestamp,
             view_params,
@@ -506,5 +518,29 @@ fn stream_input_loop(
 
         deadline += frame_interval / 3;
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    }
+}
+
+fn send_to_predictor(){
+    
+    match TcpStream::connect((host, port)) {
+        Ok(mut stream) => {
+            debug!("Connected to server at {}:{}", host, port);
+            loop {
+                debug!("send_to_predictor");
+              
+              
+                        // Attempt to convert the byte vector to a String
+                        debug!("sending from rx");
+                        if let Err(e) = stream.write_all(message.as_slice()) {
+                            debug!("Failed to send all data: {}", e);
+                        }
+                        stream
+                            .flush()
+                            .expect("Fail to flush the stream that send to ");
+                 
+            
+        }
+    }
     }
 }

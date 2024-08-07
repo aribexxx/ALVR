@@ -12,8 +12,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string};
 
-use tokio::runtime::Runtime;
-use tokio::task;
+
+
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::{
     net::{TcpListener, TcpStream},
@@ -805,9 +805,20 @@ async fn connection_pipeline(
 
     let tracking_manager = Arc::new(Mutex::new(TrackingManager::new()));
     let hand_gesture_manager = Arc::new(Mutex::new(HandGestureManager::new()));
+    let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    let (tx1, rx1): (
+        Sender<Vec<(u64, DeviceMotion)>>,
+        Receiver<Vec<(u64, DeviceMotion)>>,
+    ) = mpsc::channel();
     
-    // let rt = Runtime::new().unwrap();
-    let tracking_receive_thread = task::spawn({
+    let connect_to_predictor_thread = thread::spawn({
+        ||{
+            predictor_socket_connect(rx, tx1);          
+        }
+  
+    });
+
+    let tracking_receive_thread = thread::spawn({
         let ctx = Arc::clone(&ctx);
         let tracking_manager = Arc::clone(&tracking_manager);
         let hand_gesture_manager = Arc::clone(&hand_gesture_manager);
@@ -821,13 +832,8 @@ async fn connection_pipeline(
             });
 
         let client_hostname = client_hostname.clone();
-        async move {
-        // let runtime = Runtime::new().unwrap();
-        // rt.block_on(async {
-        task::spawn(
-           
-            async move {
-        // move || {
+         move || {
+
             let mut face_tracking_sink =
                 settings
                     .headset
@@ -845,29 +851,7 @@ async fn connection_pipeline(
                     .and_then(|config| {
                         BodyTrackingSink::new(config.sink, settings.connection.osc_local_port).ok()
                     });
-
-            let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-            let (tx1, rx1): (
-                Sender<Vec<(u64, DeviceMotion)>>,
-                Receiver<Vec<(u64, DeviceMotion)>>,
-            ) = mpsc::channel();
-
-    
-
-                // Wrap the Receiver in an Arc<Mutex<Receiver<T>>>
-            let rx1_ = Arc::new(Mutex::new(rx1));
-
-            // Clone the Arc to share the Receiver
-            let rx1_clone = Arc::clone(&rx1_);
-            
-
-              // Create a new Tokio runtime
-
-            task::spawn(
-                async move {
-                    predictor_socket_connect(rx, Arc::new(tx1)).await;
-                }
-            );
+         
          
 
             while is_streaming(&client_hostname) {
@@ -887,21 +871,21 @@ async fn connection_pipeline(
                     &timestamp, &tracking.device_motions
                 );
 
-                let tx_ = Arc::new(tx.clone());
+                // let tx_ = Arc::new(tx.clone());
        
-                task::spawn(
+                // thread::spawn(
                    
-                    async move {
-                        loop {
-                            let tx_clone = Arc::clone(&tx_);
-                            if tx_clone.send(motion_string.clone().into_bytes()).is_err() {
-                                debug!("Failed
-                                 to send data to the client handler");
-                            }
-                        }
+                //     move || {
+                //         loop {
+                //             let tx_clone = Arc::clone(&tx_);
+                //             if tx_clone.send(motion_string.clone().into_bytes()).is_err() {
+                //                 debug!("Failed
+                //                  to send data to the client handler");
+                //             }
+                //         }
 
-                    }
-                );
+                //     }
+                // );
 
 
                 let controllers_config = {
@@ -928,32 +912,6 @@ async fn connection_pipeline(
                         &timestamp, &tracking.device_motions
                     );
 
-                    let rx1_ = Arc::clone(&rx1_clone);
-
-                    let (tx2, rx2): (
-                        Sender<Vec<(u64, DeviceMotion)>>,
-                        Receiver<Vec<(u64, DeviceMotion)>>,
-                    ) = mpsc::channel();
-                    
-                    task::spawn(
-                        async move {
-                            loop {                            
-                                match rx1_.lock().recv(){
-                                Ok(pred_motion) => 
-                                {
-                                    debug!("receiving motion data :{:?}",pred_motion);
-
-                                // if let Err(e) = tx2.send(pred_motion){
-                                //     debug!("Tx2 sending Erro: {:?}",e);
-                                // };
-                                
-                            }
-                                Err(e) => debug!("Error is :{:?}",e),
-                            }
-                        }
-                        }
-                    );
-                    
                     // if let Some(data) = predict_motion {
                     //     // Use the data here
                     //     debug!("Received data: {:?}", data);
@@ -1126,8 +1084,8 @@ async fn connection_pipeline(
                         });
                 }
             }
-        }
-    );
+        // }
+    // );
         // });
 }
         
@@ -1516,7 +1474,8 @@ async fn connection_pipeline(
     video_send_thread.join().ok();
     game_audio_thread.join().ok();
     microphone_thread.join().ok();
-    tracking_receive_thread.await.ok();
+    connect_to_predictor_thread.join().ok();
+    tracking_receive_thread.join().ok();
     statistics_thread.join().ok();
     control_receive_thread.join().ok();
     stream_receive_thread.join().ok();
@@ -1530,15 +1489,15 @@ async fn connection_pipeline(
     Ok(())
 }
 
-async fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u64, DeviceMotion)>>>) {
+fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Sender<Vec<(u64, DeviceMotion)>>) {
     // Define host and port
     let host = "127.0.0.1"; // Loopback address for localhost
     let port = 12345; // Same port as the server
                       // let mut predicted_motions = vec![];
                       // let predicted_motions = Arc::new(Mutex::new(vec![]));
                       // let predicted_motions_clone = Arc::clone(&predicted_motions);
-    tokio::spawn(async move  {
-        loop {
+    thread::spawn(move || {
+        // loop {
         match TcpStream::connect((host, port)) {
             Ok(mut stream) => {
                 debug!("Connected to server at {}:{}", host, port);
@@ -1547,7 +1506,7 @@ async fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u6
                     match rx.recv() {
                         Ok(message) => {
                             // Attempt to convert the byte vector to a String
-                            debug!("sending from rx");
+                            debug!("sending from rx ");
                             if let Err(e) = stream.write_all(message.as_slice()) {
                                 debug!("Failed to send all data: {}", e);
                             }
@@ -1568,35 +1527,35 @@ async fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u6
                                 let received_str = String::from_utf8_lossy(&buffer[..size]);
                                 debug!("Received str {}", received_str);
                                 //  Deserialize the JSON string
-                                match serde_json::from_str::<PredictMotion>(&received_str) {
-                                    Ok(mut pred_motions) => {
-                                        debug!("Deserialized JSON: {:?}", pred_motions);
+                                // match serde_json::from_str::<PredictMotion>(&received_str) {
+                                //     Ok(mut pred_motions) => {
+                                //         debug!("Deserialized JSON: {:?}", pred_motions);
 
-                                        // let mut predictions = predicted_motions_clone.lock();
-                                        //TODO: Fix this part, we need to get rid of old data from the list, use consumer and producer. Need also create a buffer
-                                        debug!(" from predictor: timestamp:{:?}, tracking pose: {:?}/n",pred_motions.timestamp,pred_motions.predicted_pose);
-                                        let tx1_clone = Arc::clone(&tx1);
-                                        thread::spawn(move || {
-                                            let mut motions: Vec<(u64, DeviceMotion)> = Vec::new();
-                                            motions.push((
-                                                pred_motions.device_id,
-                                                pred_motions.predicted_pose,
-                                            ));
+                                //         // let mut predictions = predicted_motions_clone.lock();
+                                //         //TODO: Fix this part, we need to get rid of old data from the list, use consumer and producer. Need also create a buffer
+                                //         debug!(" from predictor: timestamp:{:?}, tracking pose: {:?}/n",pred_motions.timestamp,pred_motions.predicted_pose);
+                                //         let tx1 = Arc::new(&tx1);
+                                //         thread::spawn(move || {
+                                //             let mut motions: Vec<(u64, DeviceMotion)> = Vec::new();
+                                //             motions.push((
+                                //                 pred_motions.device_id,
+                                //                 pred_motions.predicted_pose,
+                                //             ));
 
-                                            if tx1_clone.send(motions).is_err() {
-                                                debug!(
-                                                    "Failed to send predicted data to main thread"
-                                                );
-                                            }
-                                        });
-                                        // predictions.push((pred_motions.device_id, pred_motions.predicted_pose));
-                                    }
-                                    Err(e) => {
-                                        debug!("Failed to deserialize JSON: {:?}", e);
-                                        // Handle deserialization error
-                                    }
-                                }
-                                // Reset the buffer for the next read
+                                //             if tx1.send(motions).is_err() {
+                                //                 debug!(
+                                //                     "Failed to send predicted data to main thread"
+                                //                 );
+                                //             }
+                                //         });
+                                //         // predictions.push((pred_motions.device_id, pred_motions.predicted_pose));
+                                //     }
+                                //     Err(e) => {
+                                //         debug!("Failed to deserialize JSON: {:?}", e);
+                                //         // Handle deserialization error
+                                //     }
+                                // }
+                                // // Reset the buffer for the next read
                                 buffer.fill(0);
                             } else {
                                 debug!("No data received from client");
@@ -1613,7 +1572,8 @@ async fn predictor_socket_connect(rx: Receiver<Vec<u8>>, tx1: Arc<Sender<Vec<(u6
             }
         }
     }
-    });
+    // }
+);
 }
 
 fn convert_to_string(timestamp: &i64, motions: &Vec<(u64, alvr_common::DeviceMotion)>) -> String {
