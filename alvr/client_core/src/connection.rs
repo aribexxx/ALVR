@@ -27,11 +27,9 @@ use alvr_sockets::{
     KEEPALIVE_INTERVAL, KEEPALIVE_TIMEOUT,
 };
 use std::{
-    collections::VecDeque,
-    sync::{mpsc, Arc},
-    thread,
-    time::{Duration, Instant},
+    collections::VecDeque, net::{IpAddr, Ipv4Addr}, str::FromStr, sync::{mpsc, Arc}, thread, time::{Duration, Instant}
 };
+
 
 #[cfg(target_os = "android")]
 use crate::audio;
@@ -247,16 +245,27 @@ fn connection_pipeline(
         HANDSHAKE_ACTION_TIMEOUT,
     )?;
 
+    let host = "127.0.0.1"; // Loopback address for localhost
+    let port = 12345; // Same port as the server
+    let ipv4_addr: IpAddr =  IpAddr::from_str(host).unwrap();
+
+    // let mut predict_stream_socket = stream_socket_builder.accept_from_server(
+    //     ipv4_addr,
+    //     port,
+    //     settings.connection.packet_size as _,
+    //     HANDSHAKE_ACTION_TIMEOUT,
+    // )?;
+
     info!("Connected to server");
 
     let mut video_receiver =
         stream_socket.subscribe_to_stream::<VideoPacketHeader>(VIDEO, MAX_UNREAD_PACKETS);
     let mut game_audio_receiver = stream_socket.subscribe_to_stream(AUDIO, MAX_UNREAD_PACKETS);
-    let tracking_sender = stream_socket.request_stream(TRACKING);
     let mut haptics_receiver =
         stream_socket.subscribe_to_stream::<Haptics>(HAPTICS, MAX_UNREAD_PACKETS);
     let statistics_sender = stream_socket.request_stream(STATISTICS);
-
+    let tracking_sender = stream_socket.request_stream(TRACKING);
+    
     let video_receive_thread = thread::spawn({
         let ctx = Arc::clone(&ctx);
         let event_queue = Arc::clone(&event_queue);
