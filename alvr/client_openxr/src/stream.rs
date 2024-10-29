@@ -407,8 +407,9 @@ fn stream_input_loop(
             return;
         };
 
-        let target_timestamp =
-            now + Duration::min(core_ctx.get_head_prediction_offset(), MAX_PREDICTION);
+        // let target_timestamp =
+        //     now + Duration::min(core_ctx.get_head_prediction_offset(), MAX_PREDICTION);
+        let target_timestamp = now;
 
         let Ok((view_flags, views)) = xr_ctx.session.locate_views(
             xr::ViewConfigurationType::PRIMARY_STEREO,
@@ -438,9 +439,10 @@ fn stream_input_loop(
 
         let mut device_motions = Vec::with_capacity(3);
 
-        let tracker_time = crate::to_xr_time(
-            now + Duration::min(core_ctx.get_tracker_prediction_offset(), MAX_PREDICTION),
-        );
+        // let tracker_time = crate::to_xr_time(
+        //     now + Duration::min(core_ctx.get_tracker_prediction_offset(), MAX_PREDICTION),
+        // );
+        let tracker_time = crate::to_xr_time(now);
 
         let (left_hand_motion, left_hand_skeleton) = crate::interaction::get_hand_motion(
             &xr_ctx.session,
