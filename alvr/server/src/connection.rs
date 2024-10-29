@@ -868,20 +868,34 @@ fn connection_pipeline(
 
                 {
                     let data_manager_lock = SERVER_DATA_MANAGER.read();
+                    let tracking_event = TrackingEvent {
+                        target_timestamp: tracking.target_timestamp,
+                        device_motions: motions
+                            .iter()
+                            .filter_map(|(id, motion)| {
+                                Some(((*DEVICE_ID_TO_PATH.get(id)?).into(), *motion))
+                            })
+                            .collect(),
+                        hand_skeletons: tracking.hand_skeletons,
+                        eye_gazes: local_eye_gazes,
+                        fb_face_expression: tracking.face_data.fb_face_expression.clone(),
+                        htc_eye_expression: tracking.face_data.htc_eye_expression.clone(),
+                        htc_lip_expression: tracking.face_data.htc_lip_expression.clone(),
+                    };
+
+                    // TODO: here write to csv to collect head motion data "tracking_event"
+                    // Write to CSV
+                    // Attempt to write to CSV and handle potential errors
+                    if let Err(e) =
+                        tracking_event.to_csv("C:\\Users\\aribex\\Desktop\\cloudgame\\research\\motion_predict\\code\\pred6dof\\data\\alvr\\tracking_with_time.csv")
+                    {
+                        debug!("Error writing tracking event to CSV: {}", e);
+                    } else {
+                        debug!("Tracking event successfully written to CSV.");
+                    }
+
                     if data_manager_lock.settings().extra.logging.log_tracking {
-                        alvr_events::send_event(EventType::Tracking(Box::new(TrackingEvent {
-                            device_motions: motions
-                                .iter()
-                                .filter_map(|(id, motion)| {
-                                    Some(((*DEVICE_ID_TO_PATH.get(id)?).into(), *motion))
-                                })
-                                .collect(),
-                            hand_skeletons: tracking.hand_skeletons,
-                            eye_gazes: local_eye_gazes,
-                            fb_face_expression: tracking.face_data.fb_face_expression.clone(),
-                            htc_eye_expression: tracking.face_data.htc_eye_expression.clone(),
-                            htc_lip_expression: tracking.face_data.htc_lip_expression.clone(),
-                        })))
+                        alvr_events::send_event(EventType::Tracking(Box::new(tracking_event)))
                     }
                 }
 
