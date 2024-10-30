@@ -72,15 +72,35 @@ impl TrackingEvent {
         // Write the header only if the file is newly created
         if file.metadata()?.len() == 0 {
             let mut wtr = Writer::from_writer(&file);
-            wtr.write_record(&["target_timestamp", "device_id", "motion_data"])?;
+            wtr.write_record(&[
+                "target_timestamp",
+                "device_id",
+                "qx",
+                "qy",
+                "qz",
+                "qw",
+                "x",
+                "y",
+                "z",
+            ])?;
             // Adjust field names as needed
         }
         // Serialize each entry in device_motions and write to CSV
         for (device_id, motion_data) in &self.device_motions {
-            let serialized_motion_data = serde_json::to_string(motion_data)?;
+            let orientation = motion_data.pose.orientation.to_array();
+            let position = motion_data.pose.position.to_array();
+
             let timestamp = self.target_timestamp.as_millis().to_string();
             let mut wtr = Writer::from_writer(&file);
-            wtr.write_record(&[&timestamp, device_id, &serialized_motion_data])?;
+            // Use a dynamic vector to store all fields, including the array elements
+            let mut record = vec![timestamp.to_string(), device_id.to_string()];
+
+            // Extend the record with each element in the orientation and position arrays
+            record.extend(orientation.iter().map(|v| v.to_string()));
+            record.extend(position.iter().map(|v| v.to_string()));
+
+            // Write the record
+            wtr.write_record(&record)?;
         }
         // // Add similar code blocks for other fields
         // wtr.write_record(&[
