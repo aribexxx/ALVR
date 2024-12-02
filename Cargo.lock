@@ -376,7 +376,6 @@ dependencies = [
  "mdns-sd",
  "pkg-config",
  "profiling",
- "rand",
  "reqwest 0.11.27",
  "rosc",
  "serde",

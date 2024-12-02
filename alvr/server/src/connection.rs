@@ -33,6 +33,9 @@ use alvr_session::{
 use alvr_sockets::{
     PeerType, ProtoControlSocket, StreamSocketBuilder, KEEPALIVE_INTERVAL, KEEPALIVE_TIMEOUT,
 };
+use chrono::{self, DateTime, Utc};
+use chrono::{Local, TimeZone};
+
 use std::{
     collections::HashMap,
     net::IpAddr,
@@ -868,7 +871,18 @@ fn connection_pipeline(
 
                 {
                     let data_manager_lock = SERVER_DATA_MANAGER.read();
+                    // Get the current system time
+                    // Get the current time in UTC
+                    let now: DateTime<Local> = Local::now();
+
+                    // Convert it to a Unix timestamp (seconds since UNIX_EPOCH)
+                    let unix_timestamp = now.timestamp_millis();
+
+                    // Convert the Unix timestamp to a string
+                    let timestamp_string = unix_timestamp.to_string();
+                    // Calculate the duration since the UNIX epoch
                     let tracking_event = TrackingEvent {
+                        unix_timestap_csv: timestamp_string,
                         target_timestamp: tracking.target_timestamp,
                         device_motions: motions
                             .iter()

@@ -4,9 +4,8 @@ use alvr_session::SessionConfig;
 use csv::Writer;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::{path::PathBuf, time::Duration};
-
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StatisticsSummary {
     pub video_packets_total: usize,
@@ -56,6 +55,7 @@ pub struct GraphStatistics {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrackingEvent {
+    pub unix_timestap_csv: String,
     pub target_timestamp: Duration,
     pub device_motions: Vec<(String, DeviceMotion)>,
     pub hand_skeletons: [Option<[Pose; 26]>; 2],
@@ -73,6 +73,7 @@ impl TrackingEvent {
         if file.metadata()?.len() == 0 {
             let mut wtr = Writer::from_writer(&file);
             wtr.write_record(&[
+                "unix_timestamp",
                 "target_timestamp",
                 "device_id",
                 "qx",
@@ -93,7 +94,12 @@ impl TrackingEvent {
             let timestamp = self.target_timestamp.as_millis().to_string();
             let mut wtr = Writer::from_writer(&file);
             // Use a dynamic vector to store all fields, including the array elements
-            let mut record = vec![timestamp.to_string(), device_id.to_string()];
+            let unix_time = &self.unix_timestap_csv;
+            let mut record = vec![
+                unix_time.clone(),
+                timestamp.to_string(),
+                device_id.to_string(),
+            ];
 
             // Extend the record with each element in the orientation and position arrays
             record.extend(orientation.iter().map(|v| v.to_string()));

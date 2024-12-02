@@ -387,13 +387,30 @@ pub fn get_hand_motion(
                 *last_position = from_xr_vec3(joint_locations[0].pose.position);
             }
 
+            let Ok((location, velocity)) = hand_source.grip_space.relate(reference_space, time)
+            else {
+                return (None, None);
+            };
+            let openxr_linear_velocity = velocity.linear_velocity;
+            let openxr_ang_velocity = velocity.angular_velocity;
+            let linear_velocity: Vec3 = Vec3::new(
+                openxr_linear_velocity.x,
+                openxr_linear_velocity.y,
+                openxr_linear_velocity.z,
+            );
+            let angular_velocity: Vec3 = Vec3::new(
+                openxr_ang_velocity.x,
+                openxr_ang_velocity.y,
+                openxr_ang_velocity.z,
+            );
             let root_motion = DeviceMotion {
                 pose: Pose {
                     orientation: from_xr_quat(joint_locations[0].pose.orientation),
                     position: *last_position,
                 },
-                linear_velocity: Vec3::ZERO,
-                angular_velocity: Vec3::ZERO,
+                linear_velocity: linear_velocity,
+                angular_velocity: angular_velocity, //                linear_velocity: Vec3::ZERO,
+                                                    //                angular_velocity: Vec3::ZERO,
             };
 
             let joints = joint_locations
