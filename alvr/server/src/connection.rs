@@ -901,7 +901,7 @@ fn connection_pipeline(
                     // Write to CSV
                     // Attempt to write to CSV and handle potential errors
                     if let Err(e) =
-                        tracking_event.to_csv("C:\\Users\\aribex\\Desktop\\cloudgame\\research\\motion_predict\\code\\pred6dof\\data\\alvr\\tracking_with_time.csv")
+                        tracking_event.to_csv("C:\\Users\\LUCS VR\\Documents\\ziyu\\ALVR\\data\\recording.csv")
                     {
                         debug!("Error writing tracking event to CSV: {}", e);
                     } else {
