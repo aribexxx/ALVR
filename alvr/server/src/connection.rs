@@ -33,14 +33,15 @@ use alvr_session::{
 use alvr_sockets::{
     PeerType, ProtoControlSocket, StreamSocketBuilder, KEEPALIVE_INTERVAL, KEEPALIVE_TIMEOUT,
 };
-use chrono::{self, DateTime, Utc};
-use chrono::{Local, TimeZone};
+// bincode::de not used in this file
+use chrono::{self, DateTime};
+use chrono::Local;
 
 use std::{
     collections::HashMap,
     net::IpAddr,
     process::Command,
-    sync::{mpsc::RecvTimeoutError, Arc},
+    sync::{mpsc::RecvTimeoutError, Arc, atomic::{AtomicBool, Ordering}},
     thread,
     time::{Duration, Instant},
 };
@@ -405,6 +406,136 @@ fn connection_pipeline(
     );
 
     let disconnect_notif = Arc::new(Condvar::new());
+
+    // Recording control flag toggled by UDP commands (START / STOP)
+    let recording_enabled = Arc::new(AtomicBool::new(false));
+
+    // UDP listener thread: receives START/STOP messages to toggle recording.
+    // Binds to 0.0.0.0:55555 by default. Non-blocking receive with a short sleep.
+    // Clone ctx for UDP control thread use
+    let ctx_for_udp = Arc::clone(&ctx);
+
+    let udp_control_thread = {
+        let rec_flag = Arc::clone(&recording_enabled);
+        let client_hostname = client_hostname.clone();
+        let ctx = Arc::clone(&ctx_for_udp);
+        thread::spawn(move || {
+            use std::net::UdpSocket;
+
+            // QTM default control port
+            let bind_addr = "0.0.0.0:8989";
+            match UdpSocket::bind(bind_addr) {
+                Ok(socket) => {
+                    debug!(" QTM UDP Detecting control socket bound to {}", bind_addr);
+                    socket.set_nonblocking(true).ok();
+                    // QTM XML packets can be larger; allocate a bigger buffer
+                    let mut buf = vec![0u8; 4096];
+
+                    // Helper to extract VALUE from tags like: <ProcessID VALUE="12345"/>
+                    fn extract_value(xml: &str, tag: &str) -> Option<String> {
+                        let needle = format!("<{} VALUE=\"", tag);
+                        let start = xml.find(&needle)? + needle.len();
+                        let rest = &xml[start..];
+                        let end = rest.find('"')?;
+                        Some(rest[..end].to_string())
+                    }
+
+                    // Local process id to ignore QTM broadcasts from this exact process
+                    let local_pid = std::process::id().to_string();
+
+                    while is_streaming(&client_hostname) {
+                        match socket.recv_from(&mut buf) {
+                            Ok((n, _src)) => {
+                                debug!(" QTM UDP Control socket received {} bytes", n);
+                                let msg = String::from_utf8_lossy(&buf[..n]).to_string();
+                                debug!(" QTM UDP Control message: {}", msg);
+                                // Quick detection of packet type
+                                let is_start = msg.contains("<CaptureStart");
+                                let is_stop = msg.contains("<CaptureStop");
+
+
+                                // Extract ProcessID to optionally ignore our own messages
+                                let packet_pid = extract_value(&msg, "ProcessID");
+
+                                // Only ignore packets that come from the same process id. We used to
+                                // ignore any packet from the same host which made local test senders
+                                // (different process on same machine) get dropped. Allow same-host
+                                // packets from other processes so local testing works.
+                                let is_same_process = packet_pid
+                                    .as_ref()
+                                    .map(|p| p == &local_pid)
+                                    .unwrap_or(false);
+
+                                if is_same_process {
+                                    // Ignore packets emitted by this process to avoid feedback loops.
+                                    continue;
+                                }
+
+                                if is_start {
+                                    // If not already recording, create new recording file
+                                    if ctx.video_recording_file.lock().is_none() {
+                                        crate::create_recording_file(&ctx, SERVER_DATA_MANAGER.read().settings());
+                                    }
+                                    rec_flag.store(true, Ordering::SeqCst);
+                                    debug!("Recording started via QTM UDP CaptureStart");
+                                } else if is_stop {
+                                    // Disable recording first so other threads stop attempting to write.
+                                    rec_flag.store(false, Ordering::SeqCst);
+
+                                    // Atomically take ownership of the raw file, csv path and the ffmpeg
+                                    // child process while holding the respective locks. This ensures
+                                    // any in-flight writer (which may hold the same mutex) finishes
+                                    // before we proceed to finalize.
+                                    let maybe_file = ctx.video_recording_file.lock().take();
+                                    let maybe_csv_path = ctx.csv_recording_path.lock().take();
+                                    let maybe_proc = ctx.video_recording_process.lock().take();
+
+                                    // If there was a raw file, try to flush it to disk.
+                                    if let Some(file) = maybe_file {
+                                        if let Err(e) = file.sync_all() {
+                                            warn!("Failed to sync recording file: {}", e);
+                                        }
+                                        // file dropped here
+                                    }
+
+                                    // If there was a csv path, we don't hold an open File for it since
+                                    // TrackingEvent::to_csv opens/appends per write. Clearing the
+                                    // stored path prevents further writes to that file.
+                                    if maybe_csv_path.is_some() {
+                                        debug!("CSV recording path cleared");
+                                    }
+
+                                    // Finalize ffmpeg muxer by closing its stdin and waiting for it to exit.
+                                    if let Some(mut child) = maybe_proc {
+                                        if let Some(stdin) = child.stdin.take() {
+                                            drop(stdin);
+                                        }
+                                        match child.wait() {
+                                            Ok(_) => debug!("ffmpeg muxer exited cleanly"),
+                                            Err(e) => warn!("ffmpeg muxer wait error: {}", e),
+                                        }
+                                    }
+
+                                    debug!("Recording stopped via QTM UDP CaptureStop");
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(100));
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!("UDP recording control socket error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to bind UDP recording control socket {}: {}", bind_addr, e);
+                }
+            }
+        })
+    };
 
     let connection_result = match proto_socket.recv(HANDSHAKE_ACTION_TIMEOUT) {
         Ok(r) => r,
@@ -797,6 +928,9 @@ fn connection_pipeline(
                 )
             });
 
+        // Clone the recording flag so the tracking thread can check it before writing CSV
+        let recording_enabled = Arc::clone(&recording_enabled);
+
         let client_hostname = client_hostname.clone();
         move || {
             let mut face_tracking_sink =
@@ -898,14 +1032,27 @@ fn connection_pipeline(
                     };
 
                     // TODO: here write to csv to collect head motion data "tracking_event"
-                    // Write to CSV
-                    // Attempt to write to CSV and handle potential errors
-                    if let Err(e) =
-                        tracking_event.to_csv("C:\\Users\\LUCS VR\\Documents\\ziyu\\ALVR\\data\\recording.csv")
-                    {
-                        debug!("Error writing tracking event to CSV: {}", e);
-                    } else {
-                        debug!("Tracking event successfully written to CSV.");
+                    // Only write when recording is enabled via UDP control
+                    if recording_enabled.load(Ordering::SeqCst) {
+                        // Use the csv path set when recording was started. Fall back to the
+                        // legacy fixed path if none is available.
+                        let csv_path_opt = ctx.csv_recording_path.lock().clone();
+                        if let Some(pathbuf) = csv_path_opt {
+                            let path_str = pathbuf.to_string_lossy().to_string();
+                            if let Err(e) = tracking_event.to_csv(&path_str) {
+                                debug!("Error writing tracking event to CSV: {}", e);
+                            } else {
+                                debug!("Tracking event successfully written to CSV.");
+                            }
+                        } else {
+                            if let Err(e) = tracking_event.to_csv(
+                                "C:\\Users\\LUCS VR\\Documents\\ziyu\\ALVR\\data\\recording.csv",
+                            ) {
+                                debug!("Error writing tracking event to CSV: {}", e);
+                            } else {
+                                debug!("Tracking event successfully written to CSV.");
+                            }
+                        }
                     }
 
                     if data_manager_lock.settings().extra.logging.log_tracking {
@@ -1338,6 +1485,9 @@ fn connection_pipeline(
 
     if settings.extra.capture.startup_video_recording {
         crate::create_recording_file(&ctx, server_data_lock.settings());
+        // If startup recording was requested, enable recording gating so CSV and other
+        // recording-aware subsystems start writing immediately.
+        recording_enabled.store(true, Ordering::SeqCst);
     }
 
     server_data_lock.update_client_list(
@@ -1355,7 +1505,22 @@ fn connection_pipeline(
     *ctx.video_channel_sender.lock() = None;
     *ctx.haptics_sender.lock() = None;
 
+    // Close raw file and ffmpeg muxer if any
     *ctx.video_recording_file.lock() = None;
+    // Clear CSV recording path as well so tracking thread stops appending
+    *ctx.csv_recording_path.lock() = None;
+    {
+        let proc_opt = ctx.video_recording_process.lock().take();
+        if let Some(mut child) = proc_opt {
+            if let Some(stdin) = child.stdin.take() {
+                drop(stdin);
+            }
+            match child.wait() {
+                Ok(_) => debug!("ffmpeg muxer exited cleanly on shutdown"),
+                Err(e) => warn!("ffmpeg muxer wait error on shutdown: {}", e),
+            }
+        }
+    }
 
     server_data_lock.update_client_list(
         client_hostname.clone(),
@@ -1388,6 +1553,8 @@ fn connection_pipeline(
     statistics_thread.join().ok();
     control_receive_thread.join().ok();
     stream_receive_thread.join().ok();
+    // Join UDP control thread
+    udp_control_thread.join().ok();
     keepalive_thread.join().ok();
     lifecycle_check_thread.join().ok();
 

@@ -34,7 +34,7 @@ use alvr_common::{
     once_cell::sync::Lazy,
     parking_lot::{Mutex, RwLock},
     settings_schema::Switch,
-    warn, ConnectionState, Fov, LifecycleState, Pose, RelaxedAtomic, DEVICE_ID_TO_PATH,
+    warn, debug, ConnectionState, Fov, LifecycleState, Pose, RelaxedAtomic, DEVICE_ID_TO_PATH,
 };
 use alvr_events::{EventType, HapticsEvent};
 use alvr_filesystem::{self as afs, Layout};
@@ -50,8 +50,10 @@ use std::{
     collections::{HashSet, VecDeque},
     env,
     ffi::CString,
-    fs::File,
+    fs::{File, OpenOptions},
     io::Write,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{SyncSender, TrySendError},
@@ -107,6 +109,11 @@ pub struct ConnectionContext {
     decoder_config: Mutex<Option<DecoderInitializationConfig>>,
     video_mirror_sender: Mutex<Option<broadcast::Sender<Vec<u8>>>>,
     video_recording_file: Mutex<Option<File>>,
+    // Child process (ffmpeg) that receives raw NAL stream on stdin and writes an MP4/MKV
+    video_recording_process: Mutex<Option<Child>>,
+    // CSV recording path for tracking events. When set, tracking events will be appended
+    // to this file (the tracking thread calls TrackingEvent::to_csv with this path).
+    csv_recording_path: Mutex<Option<PathBuf>>,
     connection_threads: Mutex<Vec<JoinHandle<()>>>,
     clients_to_be_removed: Mutex<HashSet<String>>,
     video_channel_sender: Mutex<Option<SyncSender<VideoPacket>>>,
@@ -126,13 +133,80 @@ pub fn create_recording_file(connection_context: &ConnectionContext, settings: &
         chrono::Local::now().format("%F.%H-%M-%S")
     ));
 
+    // Determine container/ffmpeg input format and mp output path
+    let (ff_input_format, mp_ext) = match settings.video.preferred_codec {
+        CodecType::H264 => ("h264", "mp4"),
+        CodecType::Hevc => ("hevc", "mp4"),
+        CodecType::AV1 => ("av1", "mkv"),
+    };
+
+    let mp_path = FILESYSTEM_LAYOUT.log_dir.join(format!(
+        "recording.{}.{mp_ext}",
+        chrono::Local::now().format("%F.%H-%M-%S")
+    ));
+
+    // CSV path uses unix timestamp millis so each recording gets its own CSV file
+    let csv_path = FILESYSTEM_LAYOUT
+        .log_dir
+        .join(format!(
+            "recording.{}.csv",
+            chrono::Local::now().timestamp_millis()
+        ));
+
+    // Ensure CSV file exists and write header if newly created.
+    if let Ok(mut csv_file) = OpenOptions::new().append(true).create(true).open(&csv_path) {
+        if let Ok(meta) = csv_file.metadata() {
+            if meta.len() == 0 {
+                // Write header line consistent with TrackingEvent::to_csv
+                let header = "unix_timestamp,target_timestamp,device_id,qx,qy,qz,qw,x,y,z\n";
+                let _ = csv_file.write_all(header.as_bytes());
+            }
+        }
+    }
+
     match File::create(path) {
         Ok(mut file) => {
+            // spawn ffmpeg to mux raw NALs into mp4/mkv
+            let mut child = match Command::new("ffmpeg")
+                .arg("-y")
+                .arg("-f")
+                .arg(ff_input_format)
+                .arg("-i")
+                .arg("pipe:0")
+                .arg("-c")
+                .arg("copy")
+                .arg(mp_path.to_string_lossy().as_ref())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    warn!("Failed to spawn ffmpeg for MP4 muxing: {}. MP4 will not be created.", e);
+                    None
+                }
+            };
+
             if let Some(config) = &*connection_context.decoder_config.lock() {
+                // write decoder init to raw file
                 file.write_all(&config.config_buffer).ok();
+
+                // write decoder init to ffmpeg stdin if present
+                if let Some(child_proc) = &mut child {
+                    if let Some(stdin) = child_proc.stdin.as_mut() {
+                        let _ = stdin.write_all(&config.config_buffer);
+                    }
+                }
             }
 
             *connection_context.video_recording_file.lock() = Some(file);
+            *connection_context.video_recording_process.lock() = child;
+            // store csv path for tracking thread to append CSV rows
+            *connection_context.csv_recording_path.lock() = Some(csv_path.clone());
+
+            // Debug log the CSV filename so tests can find it easily
+            debug!("Recording CSV path: {}", csv_path.to_string_lossy());
 
             unsafe { RequestIDR() };
         }
@@ -188,6 +262,8 @@ impl ServerCoreContext {
             decoder_config: Mutex::new(None),
             video_mirror_sender: Mutex::new(None),
             video_recording_file: Mutex::new(None),
+            video_recording_process: Mutex::new(None),
+            csv_recording_path: Mutex::new(None),
             connection_threads: Mutex::new(Vec::new()),
             clients_to_be_removed: Mutex::new(HashSet::new()),
             video_channel_sender: Mutex::new(None),
@@ -294,6 +370,16 @@ impl ServerCoreContext {
             file.write_all(&config_buffer).ok();
         }
 
+        // Also forward config to ffmpeg stdin when present so MP4/MKV contains init data
+        {
+            let mut proc_lock = self.connection_context.video_recording_process.lock();
+            if let Some(child) = proc_lock.as_mut() {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(&config_buffer);
+                }
+            }
+        }
+
         *self.connection_context.decoder_config.lock() = Some(DecoderInitializationConfig {
             codec,
             config_buffer,
@@ -350,6 +436,16 @@ impl ServerCoreContext {
 
                 if let Some(file) = &mut *self.connection_context.video_recording_file.lock() {
                     file.write_all(&nal_buffer).ok();
+                }
+
+                // Also forward NAL to ffmpeg stdin when present
+                {
+                    let mut proc_lock = self.connection_context.video_recording_process.lock();
+                    if let Some(child) = proc_lock.as_mut() {
+                        if let Some(stdin) = child.stdin.as_mut() {
+                            let _ = stdin.write_all(&nal_buffer);
+                        }
+                    }
                 }
 
                 if matches!(
