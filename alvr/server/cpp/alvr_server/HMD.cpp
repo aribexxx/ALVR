@@ -213,7 +213,10 @@ void Hmd::OnPoseUpdated(uint64_t targetTimestampNs, FfiDeviceMotion motion) {
     m_pose = pose;
 
     m_poseHistory->OnPoseUpdated(targetTimestampNs, motion);
-
+    
+    //input: time_of_poll_tracking, total_latency(mtp), pose(without_prediction), target_timestamp(as id)
+    //
+    //output:pose
     vr::VRServerDriverHost()->TrackedDevicePoseUpdated(
         this->object_id, pose, sizeof(vr::DriverPose_t));
 

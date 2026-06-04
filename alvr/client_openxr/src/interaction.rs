@@ -367,6 +367,20 @@ pub fn get_reference_space(
         .unwrap()
 }
 
+/// Create a reference space whose origin is offset by a pose expressed in the
+/// chosen reference space (e.g., STAGE). This lets you align OpenXR poses to a
+/// physical room anchor (such as a mocap L-frame) by setting the origin and
+/// orientation to that anchor pose.
+pub fn get_reference_space_with_origin(
+    xr_session: &xr::Session<xr::OpenGlEs>,
+    ty: xr::ReferenceSpaceType,
+    origin_in_ref: xr::Posef,
+) -> xr::Space {
+    xr_session
+        .create_reference_space(ty, origin_in_ref)
+        .unwrap()
+}
+
 pub fn get_hand_motion(
     xr_session: &xr::Session<xr::OpenGlEs>,
     reference_space: &xr::Space,

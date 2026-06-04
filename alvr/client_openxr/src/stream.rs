@@ -1,3 +1,8 @@
+use std::{
+    io::{Read, Write},
+    net::{IpAddr, TcpStream},
+    thread
+};
 use crate::{
     from_xr_pose,
     graphics::{self, CompositionLayerBuilder},
@@ -9,9 +14,7 @@ use alvr_client_core::{
     ClientCoreContext, DecodedFrame, Platform,
 };
 use alvr_common::{
-    error,
-    glam::{UVec2, Vec2, Vec3},
-    RelaxedAtomic, HAND_LEFT_ID, HAND_RIGHT_ID,
+    debug, error, glam::{UVec2, Vec2, Vec3}, warn, RelaxedAtomic, HAND_LEFT_ID, HAND_RIGHT_ID
 };
 use alvr_packets::{FaceData, NegotiatedStreamingConfig, ViewParams};
 use alvr_session::{
@@ -22,7 +25,7 @@ use openxr as xr;
 use std::{
     rc::Rc,
     sync::Arc,
-    thread::{self, JoinHandle},
+    thread::{JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -407,9 +410,9 @@ fn stream_input_loop(
             return;
         };
 
-        // let target_timestamp =
-        //     now + Duration::min(core_ctx.get_head_prediction_offset(), MAX_PREDICTION);
-        let target_timestamp = now;
+        let target_timestamp =
+            now; 
+            //+ Duration::min(core_ctx.get_head_prediction_offset(), MAX_PREDICTION);
 
         let Ok((view_flags, views)) = xr_ctx.session.locate_views(
             xr::ViewConfigurationType::PRIMARY_STEREO,
@@ -439,10 +442,9 @@ fn stream_input_loop(
 
         let mut device_motions = Vec::with_capacity(3);
 
-        // let tracker_time = crate::to_xr_time(
-        //     now + Duration::min(core_ctx.get_tracker_prediction_offset(), MAX_PREDICTION),
-        // );
-        let tracker_time = crate::to_xr_time(now);
+        let tracker_time = crate::to_xr_time(
+            now + Duration::min(core_ctx.get_tracker_prediction_offset(), MAX_PREDICTION),
+        );
 
         let (left_hand_motion, left_hand_skeleton) = crate::interaction::get_hand_motion(
             &xr_ctx.session,
@@ -492,6 +494,17 @@ fn stream_input_loop(
             ));
         }
 
+        //TODO: instead of sending to server, send to predictor
+        // view_params : head pose
+        // device_motion: left and right controller , and body tracking
+
+        //start a std thread here and send_Tracking to socket
+
+        warn!(
+            "stream.rs : target_timestamp: {:?}\n, view_params: {:?}\n, device_motions: {:?}\n, left_hand_skeleton: {:?}\n\n",
+            target_timestamp, view_params, device_motions, left_hand_skeleton
+        );
+
         core_ctx.send_tracking(
             target_timestamp,
             view_params,
@@ -499,6 +512,7 @@ fn stream_input_loop(
             [left_hand_skeleton, right_hand_skeleton],
             face_data,
         );
+
 
         let button_entries =
             interaction::update_buttons(&xr_ctx.session, &interaction_ctx.button_actions);
@@ -509,4 +523,58 @@ fn stream_input_loop(
         deadline += frame_interval / 3;
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
     }
+}
+
+fn send_to_predictor_thread(host:IpAddr,port:u16){
+    thread::spawn(
+        move || {
+            match TcpStream::connect((host, port)) {
+                Ok(mut stream) => {
+                    debug!("Connected to server at {}:{}", host, port);
+                    loop {
+                        debug!("send_to_predictor");
+                                // Attempt to convert the byte vector to a String
+                                debug!("sending from rx");
+                                if let Err(e) = stream.write_all(message.as_slice()) {
+                                    debug!("Failed to send all data: {}", e);
+                                }
+                                stream
+                                    .flush()
+                                    .expect("Fail to flush the stream that send to ");
+                        
+                    
+                }
+            }
+                Err(e) => debug!("{e}"),
+            }
+        }
+    );
+}
+
+fn recieve_from_predictor_thread(host:IpAddr,port:u16){
+    thread::spawn(
+        move || {
+            match TcpStream::connect((host, port)) {
+                Ok(mut stream) => {
+                    debug!("Connected to server at {}:{}", host, port);
+                    loop {
+                        debug!("send_to_predictor");
+                    
+                                let mut buf = [2024];
+                                // Attempt to convert the byte vector to a String
+                                debug!("sending from rx");
+                                if let Err(e) = stream.read(buf) {
+                                    debug!("Failed to send all data: {}", e);
+                                }
+                                stream
+                                    .flush()
+                                    .expect("Fail to flush the stream that send to ");
+                        
+                    
+                }
+            }
+                Err(e) => debug!("{e}"),
+            }
+        }
+    );
 }
